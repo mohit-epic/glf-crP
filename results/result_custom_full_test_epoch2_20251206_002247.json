@@ -1,0 +1,34 @@
+{
+    "timestamp": "20251206_002247",
+    "datetime": "2025-12-06 00:22:47",
+    "model_name": "custom_full_test_epoch2",
+    "avg_psnr": 26.574806276128015,
+    "avg_ssim": 0.8369297385215759,
+    "num_images": 4,
+    "notes": "single-batch evaluation",
+    "per_image_results": [
+        {
+            "image": "ROIs2017_winter_s2_112_p614.tif",
+            "psnr": 26.574806276128015,
+            "ssim": 0.8369297385215759
+        },
+        {
+            "image": "ROIs2017_winter_s2_61_p118.tif",
+            "psnr": 26.574806276128015,
+            "ssim": 0.8369297385215759
+        },
+        {
+            "image": "ROIs2017_winter_s2_75_p799.tif",
+            "psnr": 26.574806276128015,
+            "ssim": 0.8369297385215759
+        },
+        {
+            "image": "ROIs2017_winter_s2_84_p398.tif",
+            "psnr": 26.574806276128015,
+            "ssim": 0.8369297385215759
+        }
+    ],
+    "checkpoint": ".\\checkpoints\\checkpoint_epoch_2.pth",
+    "batch_sz": 4,
+    "single_batch": true
+}

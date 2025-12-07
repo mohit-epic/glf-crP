@@ -36,9 +36,21 @@ class AlignedDataset(Dataset):
 
         fileID = self.filelist[index]
 
-        s1_path = os.path.join(self.opts.input_data_folder, fileID[1], fileID[4])
-        s2_cloudfree_path = os.path.join(self.opts.input_data_folder, fileID[2], fileID[4])
-        s2_cloudy_path = os.path.join(self.opts.input_data_folder, fileID[3], fileID[4])
+        # fileID format: [split_id, s1_folder, s2_folder, s2_cloudy_folder, s2_filename, s1_filename, s2_cloudy_filename]
+        # For backward compatibility, check if we have 5 or 7 elements
+        if len(fileID) == 5:
+            # Old format: same filename for all
+            s1_path = os.path.join(self.opts.input_data_folder, fileID[1], fileID[4])
+            s2_cloudfree_path = os.path.join(self.opts.input_data_folder, fileID[2], fileID[4])
+            s2_cloudy_path = os.path.join(self.opts.input_data_folder, fileID[3], fileID[4])
+            reference_filename = fileID[4]
+        else:
+            # New format: different filenames
+            s1_path = os.path.join(self.opts.input_data_folder, fileID[1], fileID[5])
+            s2_cloudfree_path = os.path.join(self.opts.input_data_folder, fileID[2], fileID[4])
+            s2_cloudy_path = os.path.join(self.opts.input_data_folder, fileID[3], fileID[6])
+            reference_filename = fileID[4]  # Use s2 filename as reference
+            
         s1_data = self.get_sar_image(s1_path).astype('float32')
         s2_cloudfree_data = self.get_opt_image(s2_cloudfree_path).astype('float32')
         s2_cloudy_data = self.get_opt_image(s2_cloudy_path).astype('float32')
@@ -78,7 +90,7 @@ class AlignedDataset(Dataset):
         results = {'cloudy_data': s2_cloudy_data,
                    'cloudfree_data': s2_cloudfree_data,
                    'SAR_data': s1_data,
-                   'file_name': fileID[4]}
+                   'file_name': reference_filename}
         if self.opts.is_use_cloudmask:
             results['cloud_mask'] = cloud_mask
 

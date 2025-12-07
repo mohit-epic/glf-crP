@@ -31,13 +31,14 @@ class KernelConv2DFunction(Function):
         assert (intInputHeight - intKernelSize == intOutputHeight - 1)
         assert (intInputWidth - intKernelSize == intOutputWidth - 1)
 
-        with torch.cuda.device_of(input):
-            output = input.new().resize_(intBatches, intInputDepth, intOutputHeight, intOutputWidth).zero_()
-            if input.is_cuda == True:
+        # Updated for modern PyTorch: use device() instead of deprecated device_of()
+        device = input.device
+        with torch.cuda.device(device):
+            output = input.new_zeros(intBatches, intInputDepth, intOutputHeight, intOutputWidth)
+            if input.is_cuda:
                 kernelconv2d_cuda.forward(input, kernel, intKernelSize, output)
-            elif input.is_cuda == False:
-                raise NotImplementedError()  # CPU VERSION NOT IMPLEMENTED
-                print(5)
+            else:
+                raise NotImplementedError("CPU version not implemented")
 
         return output
     
@@ -46,14 +47,16 @@ class KernelConv2DFunction(Function):
         input, kernel = ctx.saved_tensors
         intKernelSize = ctx.kernel_size
         grad_output = grad_output.contiguous()
-        with torch.cuda.device_of(input):
-            grad_input = input.new().resize_(input.size()).zero_()
-            grad_kernel = kernel.new().resize_(kernel.size()).zero_()
-            if grad_output.is_cuda == True:
+        
+        # Updated for modern PyTorch: use device() instead of deprecated device_of()
+        device = input.device
+        with torch.cuda.device(device):
+            grad_input = input.new_zeros(input.size())
+            grad_kernel = kernel.new_zeros(kernel.size())
+            if grad_output.is_cuda:
                 kernelconv2d_cuda.backward(input, kernel, intKernelSize, grad_output, grad_input, grad_kernel)
-
-            elif grad_output.is_cuda == False:
-                raise NotImplementedError()  # CPU VERSION NOT IMPLEMENTED
+            else:
+                raise NotImplementedError("CPU version not implemented")
 
         return grad_input, grad_kernel, None
 

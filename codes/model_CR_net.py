@@ -48,6 +48,10 @@ class ModelCRNet(ModelBase):
 
         self.optimizer_G.zero_grad()
         self.loss_G.backward()
+        
+        # Clip gradients to prevent exploding gradients
+        torch.nn.utils.clip_grad_norm_(self.net_G.parameters(), max_norm=1.0)
+        
         self.optimizer_G.step()  
 
         return self.loss_G.item()

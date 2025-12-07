@@ -1,0 +1,16 @@
+{
+    "timestamp": "20251121_142227",
+    "datetime": "2025-11-21 14:22:27",
+    "model_name": "baseline_v2",
+    "avg_psnr": 23.254368679615013,
+    "avg_ssim": 0.8084010481834412,
+    "num_images": 1,
+    "notes": "Checking gpu activity",
+    "per_image_results": [
+        {
+            "image": "ROIs1970_fall_139_p839.tif",
+            "psnr": 23.254368679615013,
+            "ssim": 0.8084010481834412
+        }
+    ]
+}

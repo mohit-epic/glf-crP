@@ -1,0 +1,12 @@
+Timestamp,Model,PSNR,SSIM,Num_Images,Notes
+20251120_193534,baseline_v1,23.2544,0.8084,1,"Initial baseline run after CUDA setup"
+20251121_142227,baseline_v2,23.2544,0.8084,1,"Checking gpu activity"
+20251125_230507,full_dataset_v1,35.1894,0.9403,2751,"Testing with complete ROIs2017_winter dataset (2751 test images)"
+20251125_235627,test_workers_4,35.1894,0.9403,2751,"Testing dataloader optimization with 4 workers"
+20251129_110641,custom_single_batch_epoch1,27.0572,0.8351,1,"single-batch evaluation"
+20251129_110914,custom_single_batch_epoch1,27.0572,0.8351,1,"single-batch evaluation"
+20251129_111035,baseline,35.6855,0.9450,1,""
+20251129_111410,custom_single_batch_epoch1,27.0572,0.8351,1,"single-batch evaluation"
+20251129_111540,baseline,35.6855,0.9450,1,""
+20251206_001944,custom_single_batch_epoch2,28.1533,0.8359,1,"single-batch evaluation"
+20251206_002247,custom_full_test_epoch2,26.5748,0.8369,4,"single-batch evaluation"

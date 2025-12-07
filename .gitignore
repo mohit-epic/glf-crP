@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyTorch
+*.pth
+*.pt
+!ckpt/CR_net.pth
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+glfcr/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Data (large files)
+data/s1/*
+data/s2_cloudy/*
+data/s2_cloudfree/*
+!data/s1/.gitkeep
+!data/s2_cloudy/.gitkeep
+!data/s2_cloudfree/.gitkeep
+
+# Results
+results/*.png
+results/*.jpg
+results/*.tif
+results/visualizations/
+
+# Logs
+logs/
+*.log
+wandb/
+runs/
+
+# Temporary files
+*.tmp
+*.bak
+*.orig

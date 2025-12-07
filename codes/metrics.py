@@ -44,7 +44,17 @@ def PSNR(img1, img2, mask=None):
     else:
         mse = torch.mean((img1 - img2) ** 2)
 
+    # Handle edge cases
     if mse == 0:
         return 100
+    
+    # Convert to float if tensor
+    if isinstance(mse, torch.Tensor):
+        mse = mse.item()
+    
+    # Handle invalid MSE values (NaN, inf, negative, or extremely large)
+    if math.isnan(mse) or math.isinf(mse) or mse < 0 or mse > 1e6:
+        return 0.0  # Return 0 for invalid cases
+    
     PIXEL_MAX = 1
     return 20 * math.log10(PIXEL_MAX / math.sqrt(mse))

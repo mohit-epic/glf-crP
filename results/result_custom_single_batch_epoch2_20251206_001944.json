@@ -1,0 +1,19 @@
+{
+    "timestamp": "20251206_001944",
+    "datetime": "2025-12-06 00:19:44",
+    "model_name": "custom_single_batch_epoch2",
+    "avg_psnr": 28.153311699550013,
+    "avg_ssim": 0.8359174132347107,
+    "num_images": 1,
+    "notes": "single-batch evaluation",
+    "per_image_results": [
+        {
+            "image": "ROIs2017_winter_s2_112_p614.tif",
+            "psnr": 28.153311699550013,
+            "ssim": 0.8359174132347107
+        }
+    ],
+    "checkpoint": ".\\checkpoints\\checkpoint_epoch_2.pth",
+    "batch_sz": 1,
+    "single_batch": true
+}

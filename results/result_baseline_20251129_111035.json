@@ -1,0 +1,16 @@
+{
+    "timestamp": "20251129_111035",
+    "datetime": "2025-11-29 11:10:35",
+    "model_name": "baseline",
+    "avg_psnr": 35.68547128986657,
+    "avg_ssim": 0.945040225982666,
+    "num_images": 1,
+    "notes": "",
+    "per_image_results": [
+        {
+            "image": "ROIs2017_winter_s2_112_p614.tif",
+            "psnr": 35.68547128986657,
+            "ssim": 0.945040225982666
+        }
+    ]
+}
