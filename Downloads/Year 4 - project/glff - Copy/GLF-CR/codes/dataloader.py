@@ -104,8 +104,13 @@ class AlignedDataset(Dataset):
         # Read TIFF file with tifffile (Kaggle compatible)
         image = tifffile.imread(path)
         # Ensure proper shape: (channels, height, width)
-        if len(image.shape) == 2:
+        if image.ndim == 2:
             image = np.expand_dims(image, axis=0)
+        elif image.ndim == 3:
+            # tifffile often returns (H, W, C). Detect channel-last where the last dim is small (<=20)
+            h, w, c = image.shape
+            if c <= 20 and h > c and w > c:
+                image = np.transpose(image, (2, 0, 1))
         image[np.isnan(image)] = np.nanmean(image)  # fill holes and artifacts
         return image
 
@@ -113,8 +118,13 @@ class AlignedDataset(Dataset):
         # Read TIFF file with tifffile (Kaggle compatible)
         image = tifffile.imread(path)
         # Ensure proper shape: (channels, height, width)
-        if len(image.shape) == 2:
+        if image.ndim == 2:
             image = np.expand_dims(image, axis=0)
+        elif image.ndim == 3:
+            # tifffile often returns (H, W, C). Detect channel-last where last dim is small (<=20)
+            h, w, c = image.shape
+            if c <= 20 and h > c and w > c:
+                image = np.transpose(image, (2, 0, 1))
         image[np.isnan(image)] = np.nanmean(image)  # fill holes and artifacts
         return image
 
