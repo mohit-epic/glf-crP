@@ -74,7 +74,7 @@ def main():
     parser.add_argument('--load_size', type=int, default=256)
     parser.add_argument('--crop_size', type=int, default=128)
     parser.add_argument('--input_data_folder', type=str, default='/kaggle/input/sen12ms-cr-winter', help='Path to S1 and S2 data')
-    parser.add_argument('--data_list_filepath', type=str, default='/kaggle/input/sen12ms-cr-winter/data.csv', help='Path to data.csv')
+    parser.add_argument('--data_list_filepath', type=str, default='/kaggle/working/data.csv', help='Path to data.csv')
     parser.add_argument('--checkpoint_path', type=str, default='/kaggle/input/checkpoint3/pytorch/default/1/checkpoint_epoch_2.pth', help='Path to model checkpoint')
 
     parser.add_argument('--is_test', type=bool, default=True)
@@ -86,6 +86,25 @@ def main():
     parser.add_argument('--gpu_ids', type=str, default='0,1', help='GPU IDs for multi-GPU (comma-separated)')
 
     opts = parser.parse_args()
+
+    # Prefer generated CSV in /kaggle/working if it exists. If not, fall back to input dataset CSV.
+    working_csv = '/kaggle/working/data.csv'
+    input_csv = os.path.join(opts.input_data_folder, 'data.csv')
+
+    # If user passed a custom path (not equal to the default working path), respect it.
+    # Otherwise choose the best available CSV.
+    if opts.data_list_filepath == working_csv:
+        if os.path.exists(working_csv):
+            opts.data_list_filepath = working_csv
+        elif os.path.exists(input_csv):
+            print(f"Note: generated CSV not found; falling back to dataset CSV: {input_csv}")
+            opts.data_list_filepath = input_csv
+        else:
+            raise FileNotFoundError(f"No data CSV found. Checked: {working_csv} and {input_csv}")
+    else:
+        # user supplied a custom path; verify it exists
+        if not os.path.exists(opts.data_list_filepath):
+            raise FileNotFoundError(f"Specified data_list_filepath not found: {opts.data_list_filepath}")
 
     # Set GPU devices for multi-GPU support
     os.environ["CUDA_VISIBLE_DEVICES"] = opts.gpu_ids
