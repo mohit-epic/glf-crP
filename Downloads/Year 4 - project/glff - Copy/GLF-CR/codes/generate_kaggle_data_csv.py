@@ -33,17 +33,17 @@ if s1_base.exists():
     for folder in sorted(s1_base.iterdir()):
         if folder.is_dir() and folder.name.startswith("s1_"):
             folder_id = folder.name.replace("s1_", "")
-            for tif_file in folder.glob("*.tif"):
-                # Extract patch_id from filename, e.g., "ROIs2017_winter_s1_102_p614.tif" -> "p614"
+            for tif_file in sorted(folder.glob("*.tif")):
                 fname = tif_file.name
-                patch_id = fname.split("_")[-1].replace(".tif", "")  # e.g., "p614.tif" -> "p614"
-                rel_path = tif_file.relative_to(root)
+                patch_id = fname.split("_")[-1].replace(".tif", "")
+                rel_folder = str(folder.relative_to(root))
                 s1_files[folder_id][patch_id] = {
                     'name': fname,
-                    'rel_folder': str(rel_path.parent.relative_to(root)),
-                    'full_path': tif_file
+                    'rel_folder': rel_folder
                 }
     print(f"  Found {sum(len(v) for v in s1_files.values())} S1 files")
+else:
+    print(f"  ERROR: Path not found: {s1_base}")
 
 print("Indexing S2 (cloud-free) files...")
 s2_base = root / "ROIs2017_winter_s2" / "ROIs2017_winter_s2" / "ROIs2017_winter_s2"
@@ -51,16 +51,17 @@ if s2_base.exists():
     for folder in sorted(s2_base.iterdir()):
         if folder.is_dir() and folder.name.startswith("s2_"):
             folder_id = folder.name.replace("s2_", "")
-            for tif_file in folder.glob("*.tif"):
+            for tif_file in sorted(folder.glob("*.tif")):
                 fname = tif_file.name
                 patch_id = fname.split("_")[-1].replace(".tif", "")
-                rel_path = tif_file.relative_to(root)
+                rel_folder = str(folder.relative_to(root))
                 s2_files[folder_id][patch_id] = {
                     'name': fname,
-                    'rel_folder': str(rel_path.parent.relative_to(root)),
-                    'full_path': tif_file
+                    'rel_folder': rel_folder
                 }
     print(f"  Found {sum(len(v) for v in s2_files.values())} S2 files")
+else:
+    print(f"  ERROR: Path not found: {s2_base}")
 
 print("Indexing S2_cloudy files...")
 s2_cloudy_base = root / "ROIs2017_winter_s2_cloudy" / "ROIs2017_winter_s2_cloudy" / "ROIs2017_winter_s2_cloudy"
@@ -68,16 +69,17 @@ if s2_cloudy_base.exists():
     for folder in sorted(s2_cloudy_base.iterdir()):
         if folder.is_dir() and folder.name.startswith("s2_cloudy_"):
             folder_id = folder.name.replace("s2_cloudy_", "")
-            for tif_file in folder.glob("*.tif"):
+            for tif_file in sorted(folder.glob("*.tif")):
                 fname = tif_file.name
                 patch_id = fname.split("_")[-1].replace(".tif", "")
-                rel_path = tif_file.relative_to(root)
+                rel_folder = str(folder.relative_to(root))
                 s2_cloudy_files[folder_id][patch_id] = {
                     'name': fname,
-                    'rel_folder': str(rel_path.parent.relative_to(root)),
-                    'full_path': tif_file
+                    'rel_folder': rel_folder
                 }
     print(f"  Found {sum(len(v) for v in s2_cloudy_files.values())} S2_cloudy files")
+else:
+    print(f"  ERROR: Path not found: {s2_cloudy_base}")
 
 # Match triplets
 print("\nMatching triplets...")
@@ -124,16 +126,3 @@ if entries:
         print(f"  {i+1}. {entry}")
 else:
     print("\n✗ No triplets found! Check folder structure and naming patterns.")
-
-# Verify paths (sample check)
-print("\nVerifying sample paths...")
-if entries:
-    sample = entries[0]
-    s1_check = root / sample[1] / sample[5]
-    s2_check = root / sample[2] / sample[4]
-    s2c_check = root / sample[3] / sample[6]
-    
-    print(f"\nSample entry: {sample[4]}")
-    print(f"  S1 path exists: {s1_check.exists()} ({s1_check})")
-    print(f"  S2 path exists: {s2_check.exists()} ({s2_check})")
-    print(f"  S2_cloudy path exists: {s2c_check.exists()} ({s2c_check})")
