@@ -166,10 +166,8 @@ if __name__ == '__main__':
     ##===================================================##
     model = ModelCRNet(opts)
 
-    # Multi-GPU support
-    if gpu_count > 1:
-        print(f"Using DataParallel with {gpu_count} GPUs for training\n")
-        model.net_G = nn.DataParallel(model.net_G)
+    # Note: Model is already on correct GPU in ModelCRNet.__init__
+    # No need for DataParallel wrapping here
 
     # Resume from checkpoint if specified
     start_epoch = 0
