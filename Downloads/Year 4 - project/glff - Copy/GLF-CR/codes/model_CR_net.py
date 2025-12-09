@@ -19,8 +19,12 @@ class ModelCRNet(ModelBase):
         # Move to GPU(s) - if multi-GPU, DataParallel will handle placement
         if len(self.opts.gpu_ids) > 1:
             print("Parallel training!")
-            self.net_G = nn.DataParallel(self.net_G)
-        self.net_G = self.net_G.cuda()
+            # Convert GPU IDs from string to list of ints, then to device object
+            gpu_ids = [int(g) for g in self.opts.gpu_ids.split(',')]
+            self.net_G = nn.DataParallel(self.net_G, device_ids=gpu_ids, output_device=gpu_ids[0])
+            self.net_G = self.net_G.cuda(gpu_ids[0])
+        else:
+            self.net_G = self.net_G.cuda()
         self.print_networks(self.net_G)
 
         # initialize optimizers
