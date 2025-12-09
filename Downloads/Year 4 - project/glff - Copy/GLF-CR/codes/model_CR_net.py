@@ -16,15 +16,13 @@ class ModelCRNet(ModelBase):
         
         # create network
         self.net_G = RDN_residual_CR(self.opts.crop_size)
-        # Move to GPU(s) - if multi-GPU, DataParallel will handle placement
-        if len(self.opts.gpu_ids) > 1:
-            print("Parallel training!")
-            # Convert GPU IDs from string to list of ints, then to device object
-            gpu_ids = [int(g) for g in self.opts.gpu_ids.split(',')]
-            self.net_G = nn.DataParallel(self.net_G, device_ids=gpu_ids, output_device=gpu_ids[0])
-            self.net_G = self.net_G.cuda(gpu_ids[0])
-        else:
-            self.net_G = self.net_G.cuda()
+        # Move to single GPU (use GPU 0 to avoid DataParallel nested wrapping issues)
+        # For multi-GPU setups, increase batch_sz instead of using DataParallel
+        gpu_ids = [int(g) for g in self.opts.gpu_ids.split(',')] if self.opts.gpu_ids else [0]
+        device = torch.device(f'cuda:{gpu_ids[0]}')
+        self.net_G = self.net_G.to(device)
+        if len(gpu_ids) > 1:
+            print(f"Single-GPU training on GPU {gpu_ids[0]} (use batch_sz >= 16 for better throughput)")
         self.print_networks(self.net_G)
 
         # initialize optimizers
@@ -36,9 +34,10 @@ class ModelCRNet(ModelBase):
                         
     def set_input(self, _input):
         inputs = _input
-        self.cloudy_data = inputs['cloudy_data'].cuda()
-        self.cloudfree_data = inputs['cloudfree_data'].cuda()
-        self.SAR_data = inputs['SAR_data'].cuda()
+        device = next(self.net_G.parameters()).device  # Get device from model
+        self.cloudy_data = inputs['cloudy_data'].to(device)
+        self.cloudfree_data = inputs['cloudfree_data'].to(device)
+        self.SAR_data = inputs['SAR_data'].to(device)
         
     def forward(self):
         pred_CloudFree_data = self.net_G(self.cloudy_data, self.SAR_data)
