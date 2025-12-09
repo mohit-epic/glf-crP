@@ -17,16 +17,9 @@ except ImportError:
 
 
 class KernelConv2DFunction(Function):
-    # def __init__(self, kernel_size=3):
-    #     super(KernelConv2DFunction, self).__init__()
-    #     self.kernel_size = kernel_size
     @staticmethod
     def forward(ctx, input, kernel, kernel_size):
-        # If CUDA extension is not available, bypass Function and use standard PyTorch
-        # This allows autograd to work normally without huge memory overhead
-        if not KERNELCONV2D_AVAILABLE or not input.is_cuda:
-            return _fallback_kernel_conv2d_autograd(input, kernel, kernel_size)
-        
+        # This function is ONLY called when CUDA extension is available
         ctx.kernel_size = kernel_size
         assert (input.is_contiguous() == True)
         assert (kernel.is_contiguous() == True)
@@ -144,4 +137,9 @@ class KernelConv2D(nn.Module):
 
     def forward(self, input, kernel):
         input_pad = self.pad(input)
-        return KernelConv2DFunction.apply(input_pad, kernel, self.kernel_size)
+        # Use CUDA extension if available, otherwise use PyTorch autograd fallback
+        if KERNELCONV2D_AVAILABLE and input_pad.is_cuda:
+            return KernelConv2DFunction.apply(input_pad, kernel, self.kernel_size)
+        else:
+            # Use PyTorch autograd for gradient computation
+            return _fallback_kernel_conv2d_autograd(input_pad, kernel, self.kernel_size)
