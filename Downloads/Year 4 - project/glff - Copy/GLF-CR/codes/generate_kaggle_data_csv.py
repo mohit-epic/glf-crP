@@ -45,14 +45,16 @@ def index_files(nested_parts):
     return files
 
 
-def write_rows(path, rows, with_split=False):
+def write_rows(path, rows, split_id=None):
     with open(path, 'w', newline='') as f:
         writer = csv.writer(f)
         for r in rows:
-            if with_split:
-                writer.writerow([r['split_id'], r['s1_folder'], r['s2_folder'], r['s2_cloudy_folder'], r['s2_filename'], r['s1_filename'], r['s2_cloudy_filename']])
+            if split_id is not None:
+                # Write with split_id as first column
+                writer.writerow([split_id, r['s1_folder'], r['s2_folder'], r['s2_cloudy_folder'], r['s2_filename'], r['s1_filename'], r['s2_cloudy_filename']])
             else:
-                writer.writerow([r['s1_folder'], r['s2_folder'], r['s2_cloudy_folder'], r['s2_filename'], r['s1_filename'], r['s2_cloudy_filename']])
+                # Write without split_id (for combined data.csv with split_id already in r)
+                writer.writerow([r['split_id'], r['s1_folder'], r['s2_folder'], r['s2_cloudy_folder'], r['s2_filename'], r['s1_filename'], r['s2_cloudy_filename']])
 
 
 def main():
@@ -105,11 +107,11 @@ def main():
     for r in test:
         rr = r.copy(); rr['split_id'] = 3; combined.append(rr)
 
-    # Write separate CSVs and combined CSV with split ids
-    write_rows(OUT_DIR / 'train.csv', train, with_split=False)
-    write_rows(OUT_DIR / 'val.csv', val, with_split=False)
-    write_rows(OUT_DIR / 'test.csv', test, with_split=False)
-    write_rows(OUT_DIR / 'data.csv', combined, with_split=True)
+    # Write separate CSVs (each with their split_id) and combined CSV
+    write_rows(OUT_DIR / 'train.csv', train, split_id=1)
+    write_rows(OUT_DIR / 'val.csv', val, split_id=2)
+    write_rows(OUT_DIR / 'test.csv', test, split_id=3)
+    write_rows(OUT_DIR / 'data.csv', combined, split_id=None)
 
     print(f"Wrote train/val/test and combined CSVs to {OUT_DIR}")
     print(f"train: {len(train)}, val: {len(val)}, test: {len(test)}")
