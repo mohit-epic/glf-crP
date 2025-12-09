@@ -1,128 +1,119 @@
 """
-Generate data.csv for Kaggle SEN12MS-CR-Winter dataset.
-Handles the double-nested folder structure and maps S1, S2, S2_cloudy files.
-Run this on Kaggle to create data.csv in /kaggle/working/
+generate_kaggle_data_csv.py
+Scan SEN12MS-CR-Winter dataset and produce a 70/15/15 split.
+Writes the following files to /kaggle/working:
+  - train.csv
+  - val.csv
+  - test.csv
+  - data.csv  (combined without split id)
+
+Run on Kaggle:
+  python generate_kaggle_data_csv.py
 """
-import os
+
 import csv
+import random
 from pathlib import Path
 from collections import defaultdict
 
-# Base path (adjust if running locally)
-root = Path("/kaggle/input/sen12ms-cr-winter")
-out_csv = Path("/kaggle/working/data.csv")
 
-print(f"Scanning dataset from: {root}")
-print(f"Will write CSV to: {out_csv}")
+ROOT = Path("/kaggle/input/sen12ms-cr-winter")
+OUT_DIR = Path("/kaggle/working")
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Find all S1, S2, and S2_cloudy triplets
-# Expected structure:
-# /kaggle/input/sen12ms-cr-winter/
-#   ROIs2017_winter_s1/ROIs2017_winter_s1/s1_XXX/ROIs2017_winter_s1_XXX_pYYY.tif
-#   ROIs2017_winter_s2/ROIs2017_winter_s2/s2_XXX/ROIs2017_winter_s2_XXX_pYYY.tif
-#   ROIs2017_winter_s2_cloudy/ROIs2017_winter_s2_cloudy/s2_cloudy_XXX/ROIs2017_winter_s2_cloudy_XXX_pYYY.tif
 
-# Index files by (folder_id, patch_id) for easy matching
-s1_files = defaultdict(dict)
-s2_files = defaultdict(dict)
-s2_cloudy_files = defaultdict(dict)
+def index_files(nested_parts):
+    files = defaultdict(dict)
+    base = ROOT
+    for p in nested_parts:
+        base = base / p
+    if not base.exists():
+        return files
+    for folder in sorted(base.iterdir()):
+        if not folder.is_dir():
+            continue
+        folder_name = folder.name
+        parts = folder_name.split('_')
+        if len(parts) < 2:
+            continue
+        folder_id = parts[-1]
+        for tif in sorted(folder.glob('*.tif')):
+            fname = tif.name
+            patch = fname.split('_')[-1].replace('.tif','')
+            rel_folder = str(tif.parent.relative_to(ROOT))
+            files[folder_id][patch] = {'name': fname, 'rel_folder': rel_folder}
+    return files
 
-print("\nIndexing S1 files...")
-s1_base = root / "ROIs2017_winter_s1" / "ROIs2017_winter_s1" / "ROIs2017_winter_s1"
-if s1_base.exists():
-    for folder in sorted(s1_base.iterdir()):
-        if folder.is_dir() and folder.name.startswith("s1_"):
-            folder_id = folder.name.replace("s1_", "")
-            for tif_file in sorted(folder.glob("*.tif")):
-                fname = tif_file.name
-                patch_id = fname.split("_")[-1].replace(".tif", "")
-                rel_folder = str(folder.relative_to(root))
-                s1_files[folder_id][patch_id] = {
-                    'name': fname,
-                    'rel_folder': rel_folder
-                }
-    print(f"  Found {sum(len(v) for v in s1_files.values())} S1 files")
-else:
-    print(f"  ERROR: Path not found: {s1_base}")
 
-print("Indexing S2 (cloud-free) files...")
-s2_base = root / "ROIs2017_winter_s2" / "ROIs2017_winter_s2" / "ROIs2017_winter_s2"
-if s2_base.exists():
-    for folder in sorted(s2_base.iterdir()):
-        if folder.is_dir() and folder.name.startswith("s2_"):
-            folder_id = folder.name.replace("s2_", "")
-            for tif_file in sorted(folder.glob("*.tif")):
-                fname = tif_file.name
-                patch_id = fname.split("_")[-1].replace(".tif", "")
-                rel_folder = str(folder.relative_to(root))
-                s2_files[folder_id][patch_id] = {
-                    'name': fname,
-                    'rel_folder': rel_folder
-                }
-    print(f"  Found {sum(len(v) for v in s2_files.values())} S2 files")
-else:
-    print(f"  ERROR: Path not found: {s2_base}")
-
-print("Indexing S2_cloudy files...")
-s2_cloudy_base = root / "ROIs2017_winter_s2_cloudy" / "ROIs2017_winter_s2_cloudy" / "ROIs2017_winter_s2_cloudy"
-if s2_cloudy_base.exists():
-    for folder in sorted(s2_cloudy_base.iterdir()):
-        if folder.is_dir() and folder.name.startswith("s2_cloudy_"):
-            folder_id = folder.name.replace("s2_cloudy_", "")
-            for tif_file in sorted(folder.glob("*.tif")):
-                fname = tif_file.name
-                patch_id = fname.split("_")[-1].replace(".tif", "")
-                rel_folder = str(folder.relative_to(root))
-                s2_cloudy_files[folder_id][patch_id] = {
-                    'name': fname,
-                    'rel_folder': rel_folder
-                }
-    print(f"  Found {sum(len(v) for v in s2_cloudy_files.values())} S2_cloudy files")
-else:
-    print(f"  ERROR: Path not found: {s2_cloudy_base}")
-
-# Match triplets
-print("\nMatching triplets...")
-entries = []
-matched = 0
-skipped = 0
-
-for folder_id in sorted(s2_files.keys()):
-    for patch_id in sorted(s2_files[folder_id].keys()):
-        if folder_id in s1_files and patch_id in s1_files[folder_id]:
-            if folder_id in s2_cloudy_files and patch_id in s2_cloudy_files[folder_id]:
-                s1_info = s1_files[folder_id][patch_id]
-                s2_info = s2_files[folder_id][patch_id]
-                s2_cloudy_info = s2_cloudy_files[folder_id][patch_id]
-                
-                # CSV format: [split_id, s1_folder, s2_folder, s2_cloudy_folder, s2_filename, s1_filename, s2_cloudy_filename]
-                entries.append([
-                    '3',  # split_id = 3 (test)
-                    s1_info['rel_folder'],
-                    s2_info['rel_folder'],
-                    s2_cloudy_info['rel_folder'],
-                    s2_info['name'],
-                    s1_info['name'],
-                    s2_cloudy_info['name']
-                ])
-                matched += 1
-            else:
-                skipped += 1
-        else:
-            skipped += 1
-
-print(f"  Matched: {matched}")
-print(f"  Skipped: {skipped}")
-
-# Write CSV
-if entries:
-    with open(out_csv, 'w', newline='') as f:
+def write_rows(path, rows, with_split=False):
+    with open(path, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerows(entries)
-    print(f"\n✓ CSV written to {out_csv}")
-    print(f"  Total entries: {len(entries)}")
-    print("\nFirst 3 entries:")
-    for i, entry in enumerate(entries[:3]):
-        print(f"  {i+1}. {entry}")
-else:
-    print("\n✗ No triplets found! Check folder structure and naming patterns.")
+        for r in rows:
+            if with_split:
+                writer.writerow([r['split_id'], r['s1_folder'], r['s2_folder'], r['s2_cloudy_folder'], r['s2_filename'], r['s1_filename'], r['s2_cloudy_filename']])
+            else:
+                writer.writerow([r['s1_folder'], r['s2_folder'], r['s2_cloudy_folder'], r['s2_filename'], r['s1_filename'], r['s2_cloudy_filename']])
+
+
+def main():
+    print(f"Scanning dataset at: {ROOT}")
+
+    s1 = index_files(["ROIs2017_winter_s1", "ROIs2017_winter_s1", "ROIs2017_winter_s1"])
+    s2 = index_files(["ROIs2017_winter_s2", "ROIs2017_winter_s2", "ROIs2017_winter_s2"])
+    s2c = index_files(["ROIs2017_winter_s2_cloudy", "ROIs2017_winter_s2_cloudy", "ROIs2017_winter_s2_cloudy"])
+
+    print(f"Indexed folders -> S1: {len(s1)}, S2: {len(s2)}, S2_cloudy: {len(s2c)}")
+
+    triplets = []
+    for fid, patches in s2.items():
+        for pid, info in patches.items():
+            s1_info = s1.get(fid, {}).get(pid)
+            s2c_info = s2c.get(fid, {}).get(pid)
+            if s1_info and s2c_info:
+                triplets.append({
+                    's1_folder': s1_info['rel_folder'],
+                    's2_folder': info['rel_folder'],
+                    's2_cloudy_folder': s2c_info['rel_folder'],
+                    's2_filename': info['name'],
+                    's1_filename': s1_info['name'],
+                    's2_cloudy_filename': s2c_info['name']
+                })
+
+    total = len(triplets)
+    print(f"Total matched triplets: {total}")
+    if total == 0:
+        print("No triplets found - check dataset layout.")
+        return
+
+    random.seed(42)
+    random.shuffle(triplets)
+
+    train_n = int(0.70 * total)
+    val_n = int(0.15 * total)
+    test_n = total - train_n - val_n
+
+    train = triplets[:train_n]
+    val = triplets[train_n:train_n+val_n]
+    test = triplets[train_n+val_n:]
+
+    # Attach split ids for combined CSV
+    combined = []
+    for r in train:
+        rr = r.copy(); rr['split_id'] = 1; combined.append(rr)
+    for r in val:
+        rr = r.copy(); rr['split_id'] = 2; combined.append(rr)
+    for r in test:
+        rr = r.copy(); rr['split_id'] = 3; combined.append(rr)
+
+    # Write separate CSVs and combined CSV with split ids
+    write_rows(OUT_DIR / 'train.csv', train, with_split=False)
+    write_rows(OUT_DIR / 'val.csv', val, with_split=False)
+    write_rows(OUT_DIR / 'test.csv', test, with_split=False)
+    write_rows(OUT_DIR / 'data.csv', combined, with_split=True)
+
+    print(f"Wrote train/val/test and combined CSVs to {OUT_DIR}")
+    print(f"train: {len(train)}, val: {len(val)}, test: {len(test)}")
+
+
+if __name__ == '__main__':
+    main()
