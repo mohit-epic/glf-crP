@@ -1,0 +1,57 @@
+# Ignore parent directory files
+../**
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large binary files (>100MB for GitHub)
+*.pth
+*.egg
+*.pyd
+*.obj
+*.lib
+*.exp
+
+# Build artifacts
+GLF-CR/codes/FAC/kernelconv2d/build/
+GLF-CR/codes/FAC/kernelconv2d/dist/
+GLF-CR/codes/__pycache__/
+GLF-CR/codes/FAC/__pycache__/
+GLF-CR/codes/FAC/kernelconv2d/__pycache__/
+
+# Checkpoints (large model files)
+GLF-CR/codes/checkpoints/*.pth
+GLF-CR/ckpt/*.pth
+
+# Data logs
+*.log
+
+# Keep the GLF-CR folder structure
+!GLF-CR/
+!GLF-CR/codes/
+!GLF-CR/ckpt/
+!GLF-CR/results/
+!GLF-CR/data/
