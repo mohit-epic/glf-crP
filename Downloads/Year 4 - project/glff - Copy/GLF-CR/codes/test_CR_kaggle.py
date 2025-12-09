@@ -73,9 +73,9 @@ def main():
 
     parser.add_argument('--load_size', type=int, default=256)
     parser.add_argument('--crop_size', type=int, default=128)
-    parser.add_argument('--input_data_folder', type=str, default='/kaggle/input/image1', help='Path to S1 and S2 data')
-    parser.add_argument('--data_list_filepath', type=str, default='/kaggle/input/image2/data.csv', help='Path to data.csv')
-    parser.add_argument('--checkpoint_path', type=str, default='/kaggle/input/image3/CR_net.pth', help='Path to model checkpoint')
+    parser.add_argument('--input_data_folder', type=str, default='/kaggle/input/sen12ms-cr-winter', help='Path to S1 and S2 data')
+    parser.add_argument('--data_list_filepath', type=str, default='/kaggle/input/sen12ms-cr-winter/data.csv', help='Path to data.csv')
+    parser.add_argument('--checkpoint_path', type=str, default='/kaggle/input/checkpoint3/pytorch/default/1/checkpoint_epoch_2.pth', help='Path to model checkpoint')
 
     parser.add_argument('--is_test', type=bool, default=True)
     parser.add_argument('--is_use_cloudmask', type=bool, default=False) 
