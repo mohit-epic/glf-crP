@@ -7,6 +7,7 @@ import numpy as np
 import json
 from datetime import datetime
 import time
+from tqdm import tqdm
 
 # Enable cuDNN autotuner for optimal performance
 torch.backends.cudnn.benchmark = True
@@ -60,7 +61,8 @@ def validate(model, val_dataloader):
     num_batches = 0
     
     with torch.no_grad():
-        for data in val_dataloader:
+        progress_bar = tqdm(val_dataloader, desc="Validating", unit="batch")
+        for data in progress_bar:
             model.set_input(data)
             pred = model.forward()
             
@@ -70,6 +72,11 @@ def validate(model, val_dataloader):
             total_psnr += batch_psnr
             total_ssim += batch_ssim
             num_batches += 1
+            
+            # Update progress bar with current metrics
+            avg_psnr = total_psnr / num_batches
+            avg_ssim = total_ssim / num_batches
+            progress_bar.set_postfix({'PSNR': f'{avg_psnr:.2f}', 'SSIM': f'{avg_ssim:.4f}'})
     
     avg_psnr = total_psnr / num_batches
     avg_ssim = total_ssim / num_batches
@@ -239,7 +246,9 @@ if __name__ == '__main__':
         epoch_psnr = 0.0
         num_batches = 0
         
-        for batch_idx, data in enumerate(train_dataloader):
+        # Wrap dataloader with tqdm for progress bar
+        progress_bar = tqdm(train_dataloader, desc=f"Training Epoch {epoch}", unit="batch")
+        for batch_idx, data in enumerate(progress_bar):
             total_steps += 1
             
             model.set_input(data)
@@ -248,13 +257,9 @@ if __name__ == '__main__':
             epoch_loss += batch_loss
             num_batches += 1
             
-            # Print progress every 100 batches
-            if (batch_idx + 1) % 100 == 0:
-                progress_pct = 100 * (batch_idx + 1) / len(train_dataloader)
-                bar_length = 30
-                filled = int(bar_length * (batch_idx + 1) / len(train_dataloader))
-                bar = '=' * filled + '>' + '.' * (bar_length - filled - 1)
-                print(f"  [{bar}] {progress_pct:5.1f}% ({batch_idx+1}/{len(train_dataloader)})")
+            # Update progress bar with current metrics
+            avg_loss = epoch_loss / num_batches
+            progress_bar.set_postfix({'loss': f'{avg_loss:.4f}'})
         
         # Epoch statistics
         avg_train_loss = epoch_loss / num_batches
