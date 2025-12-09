@@ -61,6 +61,17 @@ def validate(model, val_dataloader):
     num_batches = 0
     
     with torch.no_grad():
+        # Handle empty validation set gracefully
+        try:
+            val_len = len(val_dataloader)
+        except Exception:
+            val_len = None
+
+        if val_len == 0:
+            print("Warning: validation set is empty. Skipping validation.")
+            model.net_G.train()
+            return 0.0, 0.0
+
         progress_bar = tqdm(val_dataloader, desc="Validating", unit="batch")
         for data in progress_bar:
             model.set_input(data)
@@ -139,7 +150,54 @@ if __name__ == '__main__':
     ##===================================================##
     seed_torch()
 
-    train_filelist, val_filelist, _ = get_train_val_test_filelists(opts.data_list_filepath)
+    # Load train/val/test filelists.
+    def read_csv_rows(path):
+        rows = []
+        try:
+            with open(path, 'r') as f:
+                reader = csv.reader(f)
+                for r in reader:
+                    if len(r) == 0:
+                        continue
+                    rows.append(r)
+        except Exception:
+            return []
+        return rows
+
+    train_filelist, val_filelist, test_filelist = [], [], []
+    basename = os.path.basename(opts.data_list_filepath).lower()
+    parent_dir = os.path.dirname(opts.data_list_filepath)
+
+    # If user provided combined data.csv (with split_id first column), use existing parser
+    if 'data.csv' in basename:
+        train_filelist, val_filelist, test_filelist = get_train_val_test_filelists(opts.data_list_filepath)
+    else:
+        # If user provided train.csv, try to find sibling val.csv and test.csv
+        if 'train' in basename:
+            train_filelist = read_csv_rows(opts.data_list_filepath)
+            val_path = os.path.join(parent_dir, 'val.csv')
+            test_path = os.path.join(parent_dir, 'test.csv')
+            if os.path.exists(val_path):
+                val_filelist = read_csv_rows(val_path)
+            if os.path.exists(test_path):
+                test_filelist = read_csv_rows(test_path)
+            # If siblings not present, try combined data.csv in same directory
+            if len(val_filelist) == 0 or len(test_filelist) == 0:
+                combined_path = os.path.join(parent_dir, 'data.csv')
+                if os.path.exists(combined_path):
+                    t, v, te = get_train_val_test_filelists(combined_path)
+                    # If combined has entries, prefer them for missing splits
+                    if len(val_filelist) == 0:
+                        val_filelist = v
+                    if len(test_filelist) == 0:
+                        test_filelist = te
+        else:
+            # Unknown filename: attempt to parse as combined or read as full list
+            train_filelist, val_filelist, test_filelist = get_train_val_test_filelists(opts.data_list_filepath)
+            if len(train_filelist) == 0 and len(val_filelist) == 0 and len(test_filelist) == 0:
+                # fallback: read all rows as train set
+                all_rows = read_csv_rows(opts.data_list_filepath)
+                train_filelist = all_rows
 
     print(f"Training samples: {len(train_filelist)}")
     print(f"Validation samples: {len(val_filelist)}")
