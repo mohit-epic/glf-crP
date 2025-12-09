@@ -28,7 +28,7 @@ s2_files = defaultdict(dict)
 s2_cloudy_files = defaultdict(dict)
 
 print("\nIndexing S1 files...")
-s1_base = root / "ROIs2017_winter_s1" / "ROIs2017_winter_s1"
+s1_base = root / "ROIs2017_winter_s1" / "ROIs2017_winter_s1" / "ROIs2017_winter_s1"
 if s1_base.exists():
     for folder in sorted(s1_base.iterdir()):
         if folder.is_dir() and folder.name.startswith("s1_"):
@@ -46,7 +46,7 @@ if s1_base.exists():
     print(f"  Found {sum(len(v) for v in s1_files.values())} S1 files")
 
 print("Indexing S2 (cloud-free) files...")
-s2_base = root / "ROIs2017_winter_s2" / "ROIs2017_winter_s2"
+s2_base = root / "ROIs2017_winter_s2" / "ROIs2017_winter_s2" / "ROIs2017_winter_s2"
 if s2_base.exists():
     for folder in sorted(s2_base.iterdir()):
         if folder.is_dir() and folder.name.startswith("s2_"):
@@ -63,7 +63,7 @@ if s2_base.exists():
     print(f"  Found {sum(len(v) for v in s2_files.values())} S2 files")
 
 print("Indexing S2_cloudy files...")
-s2_cloudy_base = root / "ROIs2017_winter_s2_cloudy" / "ROIs2017_winter_s2_cloudy"
+s2_cloudy_base = root / "ROIs2017_winter_s2_cloudy" / "ROIs2017_winter_s2_cloudy" / "ROIs2017_winter_s2_cloudy"
 if s2_cloudy_base.exists():
     for folder in sorted(s2_cloudy_base.iterdir()):
         if folder.is_dir() and folder.name.startswith("s2_cloudy_"):
