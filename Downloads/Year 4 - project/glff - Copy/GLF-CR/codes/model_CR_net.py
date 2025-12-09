@@ -15,13 +15,13 @@ class ModelCRNet(ModelBase):
         self.opts = opts
         
         # create network
-        self.net_G = RDN_residual_CR(self.opts.crop_size).cuda()
-        self.print_networks(self.net_G)
-        
-        # Parallel training
+        self.net_G = RDN_residual_CR(self.opts.crop_size)
+        # Move to GPU(s) - if multi-GPU, DataParallel will handle placement
         if len(self.opts.gpu_ids) > 1:
             print("Parallel training!")
             self.net_G = nn.DataParallel(self.net_G)
+        self.net_G = self.net_G.cuda()
+        self.print_networks(self.net_G)
 
         # initialize optimizers
         if self.opts.optimizer == 'Adam':
