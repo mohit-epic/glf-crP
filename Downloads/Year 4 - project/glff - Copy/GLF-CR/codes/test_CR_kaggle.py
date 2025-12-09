@@ -5,64 +5,86 @@ import argparse
 from datetime import datetime
 import json
 
+# optional progress bar
+try:
+    from tqdm import tqdm
+except Exception:
+    tqdm = None
+
 from metrics import PSNR, SSIM
 from dataloader import AlignedDataset, get_train_val_test_filelists
 from net_CR_RDN import RDN_residual_CR
 
 ##########################################################
 def test(CR_net, opts):
-
     _, _, test_filelist = get_train_val_test_filelists(opts.data_list_filepath)
-    
+
     data = AlignedDataset(opts, test_filelist)
 
     dataloader = torch.utils.data.DataLoader(
-        dataset=data, 
-        batch_size=opts.batch_sz, 
-        shuffle=False, 
+        dataset=data,
+        batch_size=opts.batch_sz,
+        shuffle=False,
         num_workers=opts.num_workers,
         pin_memory=True
     )
 
-    iters = 0
-    total_psnr = 0
-    total_ssim = 0
-    results_per_image = []
-    
-    with torch.no_grad():
-        for inputs in dataloader:
+    # Report test set size
+    test_set_size = len(test_filelist)
+    print(f"Test set size: {test_set_size} images")
 
+    total_psnr = 0.0
+    total_ssim = 0.0
+    results_per_image = []
+    processed_images = 0
+
+    iterator = tqdm(dataloader, total=len(dataloader), desc='Testing') if tqdm is not None else dataloader
+
+    with torch.no_grad():
+        for inputs in iterator:
             cloudy_data = inputs['cloudy_data'].cuda()
             cloudfree_data = inputs['cloudfree_data'].cuda()
             SAR_data = inputs['SAR_data'].cuda()
             file_names = inputs['file_name']
 
             pred_cloudfree_data = CR_net(cloudy_data, SAR_data)
-           
-            psnr_13 = PSNR(pred_cloudfree_data, cloudfree_data)
-            ssim_13 = SSIM(pred_cloudfree_data, cloudfree_data).item()
-            
-            total_psnr += psnr_13
-            total_ssim += ssim_13
-            
-            # Store per-image results
+
+            # compute numeric values robustly (support tensor or scalar)
+            psnr_val = PSNR(pred_cloudfree_data, cloudfree_data)
+            if hasattr(psnr_val, 'item'):
+                psnr_val = float(psnr_val.item())
+            else:
+                psnr_val = float(psnr_val)
+
+            ssim_val = SSIM(pred_cloudfree_data, cloudfree_data)
+            if hasattr(ssim_val, 'item'):
+                ssim_val = float(ssim_val.item())
+            else:
+                ssim_val = float(ssim_val)
+
+            total_psnr += psnr_val * len(file_names)
+            total_ssim += ssim_val * len(file_names)
+
+            # Store per-image results (keeps compatibility with result saving)
             for file_name in file_names:
                 results_per_image.append({
                     'image': file_name,
-                    'psnr': float(psnr_13),
-                    'ssim': float(ssim_13)
+                    'psnr': psnr_val,
+                    'ssim': ssim_val
                 })
-                print(f"{iters:4d} | {file_name:40s} | PSNR: {psnr_13:7.4f} dB | SSIM: {ssim_13:.4f}")
-                iters += 1
 
-            # Stop after first batch if single_batch flag is set
+            processed_images += len(file_names)
+
+            # update progress bar postfix
+            if tqdm is not None:
+                iterator.set_postfix({'PSNR': f"{psnr_val:.3f}", 'SSIM': f"{ssim_val:.3f}", 'Done': processed_images})
+
             if getattr(opts, 'single_batch', False):
                 break
-    
-    # Calculate averages
-    avg_psnr = total_psnr / iters if iters > 0 else 0
-    avg_ssim = total_ssim / iters if iters > 0 else 0
-    
+
+    avg_psnr = total_psnr / processed_images if processed_images > 0 else 0.0
+    avg_ssim = total_ssim / processed_images if processed_images > 0 else 0.0
+
     return avg_psnr, avg_ssim, results_per_image
     
 def main():
