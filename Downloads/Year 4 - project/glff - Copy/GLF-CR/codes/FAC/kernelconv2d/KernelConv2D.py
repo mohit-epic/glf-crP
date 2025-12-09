@@ -87,9 +87,12 @@ def _fallback_kernel_conv2d(input, kernel, kernel_size):
     kernel_reshaped = kernel.view(B, C, kernel_size, kernel_size, H_out, W_out)  # (B, C, K, K, H_out, W_out)
     
     # Compute output by summing over spatial kernel dimensions
+    # Use the reshaped kernel (B, C, K, K, H_out, W_out)
     for i in range(kernel_size):
         for j in range(kernel_size):
-            output += patches[:, :, i * kernel_size + j, :, :] * kernel[:, :, i * kernel_size + j, :, :]
+            k_slice = kernel_reshaped[:, :, i, j, :, :]  # (B, C, H_out, W_out)
+            p_slice = patches[:, :, i * kernel_size + j, :, :]  # (B, C, H_out, W_out)
+            output += p_slice * k_slice
     
     return output
 
