@@ -22,6 +22,11 @@ class KernelConv2DFunction(Function):
     #     self.kernel_size = kernel_size
     @staticmethod
     def forward(ctx, input, kernel, kernel_size):
+        # If CUDA extension is not available, bypass Function and use standard PyTorch
+        # This allows autograd to work normally without huge memory overhead
+        if not KERNELCONV2D_AVAILABLE or not input.is_cuda:
+            return _fallback_kernel_conv2d_autograd(input, kernel, kernel_size)
+        
         ctx.kernel_size = kernel_size
         assert (input.is_contiguous() == True)
         assert (kernel.is_contiguous() == True)
@@ -42,12 +47,7 @@ class KernelConv2DFunction(Function):
         device = input.device
         with torch.cuda.device(device):
             output = input.new_zeros(intBatches, intInputDepth, intOutputHeight, intOutputWidth)
-            if input.is_cuda and KERNELCONV2D_AVAILABLE:
-                kernelconv2d_cuda.forward(input, kernel, intKernelSize, output)
-            else:
-                # Fallback: use PyTorch standard convolution
-                # Reshape kernel from (B, C*K*K, H, W) to (B*H*W, C, K, K)
-                output = _fallback_kernel_conv2d(input, kernel, intKernelSize)
+            kernelconv2d_cuda.forward(input, kernel, intKernelSize, output)
 
         return output
     
@@ -56,18 +56,12 @@ class KernelConv2DFunction(Function):
         input, kernel = ctx.saved_tensors
         intKernelSize = ctx.kernel_size
         grad_output = grad_output.contiguous()
-        
-        # Updated for modern PyTorch: use device() instead of deprecated device_of()
         device = input.device
+        
+        grad_input = input.new_zeros(input.size())
+        grad_kernel = kernel.new_zeros(kernel.size())
         with torch.cuda.device(device):
-            if grad_output.is_cuda and KERNELCONV2D_AVAILABLE:
-                grad_input = input.new_zeros(input.size())
-                grad_kernel = kernel.new_zeros(kernel.size())
-                kernelconv2d_cuda.backward(input, kernel, intKernelSize, grad_output, grad_input, grad_kernel)
-            else:
-                # Fallback: compute gradients using standard PyTorch operations
-                grad_input = torch.zeros_like(input)
-                grad_kernel = torch.zeros_like(kernel)
+            kernelconv2d_cuda.backward(input, kernel, intKernelSize, grad_output, grad_input, grad_kernel)
 
         return grad_input, grad_kernel, None
 
@@ -93,6 +87,33 @@ def _fallback_kernel_conv2d(input, kernel, kernel_size):
             k_slice = kernel_reshaped[:, :, i, j, :, :]  # (B, C, H_out, W_out)
             p_slice = patches[:, :, i * kernel_size + j, :, :]  # (B, C, H_out, W_out)
             output += p_slice * k_slice
+    
+    return output
+
+
+def _fallback_kernel_conv2d_autograd(input, kernel, kernel_size):
+    """
+    Fallback implementation that supports gradients without CUDA extension.
+    Simple element-wise operations that PyTorch can auto-differentiate efficiently.
+    """
+    B, C, H_in, W_in = input.shape
+    H_out = H_in - kernel_size + 1
+    W_out = W_in - kernel_size + 1
+    
+    # Unfold input patches: (B, C*K*K, H_out*W_out)
+    patches = torch.nn.functional.unfold(input, kernel_size=kernel_size)
+    # Reshape to (B, C, K*K, H_out*W_out) then (B, C, K, K, H_out, W_out)
+    patches_reshaped = patches.view(B, C, kernel_size * kernel_size, H_out * W_out)
+    patches_reshaped = patches_reshaped.view(B, C, kernel_size, kernel_size, H_out, W_out)
+    
+    # Kernel shape: (B, C*K*K, H_out, W_out)
+    # Reshape to (B, C, K, K, H_out, W_out) for element-wise multiplication
+    kernel_view = kernel.view(B, C, kernel_size, kernel_size, H_out, W_out)
+    
+    # Multiply patches by kernel and sum over (C, K, K) to get output (B, H_out, W_out)
+    # But we want output shape (B, C, H_out, W_out)
+    # Actually, let's multiply and sum over just (K, K) first, keeping (B, C, H_out, W_out)
+    output = (patches_reshaped * kernel_view).sum(dim=(2, 3))  # Sum over K, K -> (B, C, H_out, W_out)
     
     return output
 
