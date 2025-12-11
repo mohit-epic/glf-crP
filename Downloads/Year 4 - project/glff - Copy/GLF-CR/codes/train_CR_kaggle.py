@@ -2,15 +2,22 @@ import os
 import sys
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 import argparse
 import numpy as np
 import json
 from datetime import datetime
 import time
 from tqdm import tqdm
+import csv
 
 # Enable cuDNN autotuner for optimal performance
 torch.backends.cudnn.benchmark = True
+
+# Fix PyTorch 2.6 UnpicklingError
+import torch.serialization
+import argparse as _argparse
+torch.serialization.add_safe_globals([_argparse.Namespace])
 
 from dataloader import *
 from model_CR_net import *
@@ -20,7 +27,7 @@ from metrics import *
 ##********** Configure training settings ************##
 ##===================================================##
 parser = argparse.ArgumentParser()
-parser.add_argument('--batch_sz', type=int, default=4, help='batch size used for training')
+parser.add_argument('--batch_sz', type=int, default=4, help='batch size PER GPU')
 parser.add_argument('--num_workers', type=int, default=4, help='number of data loading workers')
 
 parser.add_argument('--load_size', type=int, default=256)
@@ -40,20 +47,21 @@ parser.add_argument('--save_freq', type=int, default=1, help='save checkpoint ev
 parser.add_argument('--save_model_dir', type=str, default='/kaggle/working/checkpoints', help='checkpoint directory')
 
 parser.add_argument('--resume_checkpoint', type=str, default=None, help='path to resume checkpoint')
-parser.add_argument('--train_from_scratch', action='store_true', default=True, help='train from scratch (no pretrained weights)')
+parser.add_argument('--train_from_scratch', action='store_true', default=True, help='train from scratch')
 
-parser.add_argument('--experiment_name', type=str, default='kaggle_training', help='experiment name for logging')
+parser.add_argument('--experiment_name', type=str, default='kaggle_training', help='experiment name')
 parser.add_argument('--notes', type=str, default='', help='additional notes')
 
-parser.add_argument('--gpu_ids', type=str, default='0,1', help='GPU IDs for multi-GPU training (comma-separated)')
+parser.add_argument('--use_ddp', action='store_true', default=False, help='Use DistributedDataParallel for better multi-GPU')
+parser.add_argument('--local_rank', type=int, default=-1, help='Local rank for distributed training')
 
 opts = parser.parse_args()
 
 ##===================================================##
 ##************** Training functions *****************##
 ##===================================================##
-def validate(model, val_dataloader):
-    """Validate model on validation set"""
+def validate(model, val_dataloader, device):
+    """Validate model on validation set with proper error handling"""
     model.net_G.eval()
     
     total_psnr = 0.0
@@ -65,29 +73,59 @@ def validate(model, val_dataloader):
         try:
             val_len = len(val_dataloader)
         except Exception:
-            val_len = None
+            val_len = 0
 
         if val_len == 0:
             print("Warning: validation set is empty. Skipping validation.")
             model.net_G.train()
             return 0.0, 0.0
 
-        progress_bar = tqdm(val_dataloader, desc="Validating", unit="batch")
+        progress_bar = tqdm(val_dataloader, desc="Validating", unit="batch", disable=(opts.local_rank not in [-1, 0]))
+        
         for data in progress_bar:
-            model.set_input(data)
-            pred = model.forward()
+            try:
+                model.set_input(data)
+                pred = model.forward()
+                
+                # Ensure tensors are valid (no NaN or Inf)
+                if torch.isnan(pred).any() or torch.isinf(pred).any():
+                    print("Warning: NaN or Inf detected in predictions, skipping batch")
+                    continue
+                
+                if torch.isnan(model.cloudfree_data).any() or torch.isinf(model.cloudfree_data).any():
+                    print("Warning: NaN or Inf detected in ground truth, skipping batch")
+                    continue
+                
+                batch_psnr = PSNR(pred, model.cloudfree_data)
+                batch_ssim = SSIM(pred, model.cloudfree_data)
+                
+                # Check if metrics are valid
+                if torch.isnan(batch_psnr) or torch.isinf(batch_psnr):
+                    print("Warning: Invalid PSNR, skipping batch")
+                    continue
+                if torch.isnan(batch_ssim) or torch.isinf(batch_ssim):
+                    print("Warning: Invalid SSIM, skipping batch")
+                    continue
+                
+                total_psnr += float(batch_psnr.item() if hasattr(batch_psnr, 'item') else batch_psnr)
+                total_ssim += float(batch_ssim.item() if hasattr(batch_ssim, 'item') else batch_ssim)
+                num_batches += 1
+                
+                # Update progress bar
+                if num_batches > 0:
+                    avg_psnr = total_psnr / num_batches
+                    avg_ssim = total_ssim / num_batches
+                    progress_bar.set_postfix({'PSNR': f'{avg_psnr:.2f}', 'SSIM': f'{avg_ssim:.4f}'})
             
-            batch_psnr = PSNR(pred, model.cloudfree_data)
-            batch_ssim = SSIM(pred, model.cloudfree_data)
-            
-            total_psnr += batch_psnr
-            total_ssim += batch_ssim
-            num_batches += 1
-            
-            # Update progress bar with current metrics
-            avg_psnr = total_psnr / num_batches
-            avg_ssim = total_ssim / num_batches
-            progress_bar.set_postfix({'PSNR': f'{avg_psnr:.2f}', 'SSIM': f'{avg_ssim:.4f}'})
+            except Exception as e:
+                print(f"Error during validation batch: {e}")
+                continue
+    
+    # Avoid division by zero
+    if num_batches == 0:
+        print("Warning: No valid batches in validation set")
+        model.net_G.train()
+        return 0.0, 0.0
     
     avg_psnr = total_psnr / num_batches
     avg_ssim = total_ssim / num_batches
@@ -95,31 +133,41 @@ def validate(model, val_dataloader):
     model.net_G.train()
     return avg_psnr, avg_ssim
 
-def save_checkpoint_fn(model, epoch, val_psnr, best_val_psnr, opts):
-    """Save training checkpoint"""
+def save_checkpoint_fn(model, epoch, val_psnr, best_val_psnr, opts, is_ddp=False):
+    """Save training checkpoint - GUARANTEED to save every epoch"""
+    # Only save from main process in DDP
+    if is_ddp and opts.local_rank != 0:
+        return False
+    
     os.makedirs(opts.save_model_dir, exist_ok=True)
+    
+    # Get the actual model (unwrap DataParallel/DDP if needed)
+    if isinstance(model.net_G, (nn.DataParallel, nn.parallel.DistributedDataParallel)):
+        model_state = model.net_G.module.state_dict()
+    else:
+        model_state = model.net_G.state_dict()
     
     checkpoint = {
         'epoch': epoch,
-        'model_state_dict': model.net_G.state_dict(),
+        'model_state_dict': model_state,
         'optimizer_state_dict': model.optimizer_G.state_dict(),
         'lr_scheduler_state_dict': model.lr_scheduler.state_dict(),
         'val_psnr': val_psnr,
         'best_val_psnr': best_val_psnr,
-        'opts': opts
+        'opts': vars(opts)
     }
     
-    # Save regular checkpoint
+    # ALWAYS save epoch checkpoint
     checkpoint_path = os.path.join(opts.save_model_dir, f'checkpoint_epoch_{epoch}.pth')
     torch.save(checkpoint, checkpoint_path)
-    print(f"Saved checkpoint: {checkpoint_path}")
+    print(f"✓ Saved checkpoint: {checkpoint_path}")
     
-    # Save best model
+    # Save best model if this is the best so far
     is_best = val_psnr > best_val_psnr
     if is_best:
         best_path = os.path.join(opts.save_model_dir, 'best_model.pth')
         torch.save(checkpoint, best_path)
-        print(f"Saved best model: {best_path} (PSNR: {val_psnr:.2f} dB)")
+        print(f"✓ Saved best model: {best_path} (PSNR: {val_psnr:.2f} dB)")
     
     return is_best
 
@@ -128,29 +176,51 @@ def save_checkpoint_fn(model, epoch, val_psnr, best_val_psnr, opts):
 ##===================================================##
 if __name__ == '__main__':
     ##===================================================##
+    ##*************** Setup DDP if requested ************##
+    ##===================================================##
+    is_ddp = opts.use_ddp
+    local_rank = opts.local_rank
+    
+    if is_ddp:
+        if local_rank == -1:
+            # Not launched with torch.distributed.launch, fall back to DataParallel
+            print("Warning: --use_ddp specified but not launched with torchrun/torch.distributed.launch")
+            print("Falling back to DataParallel mode")
+            is_ddp = False
+        else:
+            # Initialize DDP
+            dist.init_process_group(backend='nccl')
+            torch.cuda.set_device(local_rank)
+            print(f"DDP initialized: rank {local_rank}/{dist.get_world_size()}")
+    
+    ##===================================================##
     ##*************** Print configuration ***************##
     ##===================================================##
-    print("\n" + "="*60)
-    print("Training Configuration")
-    print("="*60)
-    for arg in vars(opts):
-        print(f"{arg:.<30} {getattr(opts, arg)}")
-    print("="*60 + "\n")
+    if not is_ddp or local_rank in [-1, 0]:
+        print("\n" + "="*60)
+        print("Training Configuration")
+        print("="*60)
+        for arg in vars(opts):
+            print(f"{arg:.<30} {getattr(opts, arg)}")
+        print("="*60 + "\n")
 
     ##===================================================##
-    ##*** Set GPU devices for multi-GPU training *******##
+    ##*** Set GPU devices ***##
     ##===================================================##
-    os.environ["CUDA_VISIBLE_DEVICES"] = opts.gpu_ids
-    gpu_count = len(opts.gpu_ids.split(','))
-    print(f"GPUs available: {gpu_count}")
-    print(f"GPU IDs: {opts.gpu_ids}\n")
+    if not is_ddp:
+        # Set all available GPUs for DataParallel
+        gpu_count = torch.cuda.device_count()
+        print(f"GPUs available: {gpu_count}")
+        if gpu_count > 1:
+            print(f"Using DataParallel on {gpu_count} GPUs")
+        print()
 
     ##===================================================##
     ##*************** Create dataloader *****************##
     ##===================================================##
     seed_torch()
 
-    # Load train/val/test filelists.
+    # Load train/val/test filelists
     def read_csv_rows(path):
         rows = []
         try:
@@ -168,11 +238,9 @@ if __name__ == '__main__':
     basename = os.path.basename(opts.data_list_filepath).lower()
     parent_dir = os.path.dirname(opts.data_list_filepath)
 
-    # If user provided combined data.csv (with split_id first column), use existing parser
     if 'data.csv' in basename:
         train_filelist, val_filelist, test_filelist = get_train_val_test_filelists(opts.data_list_filepath)
     else:
-        # If user provided train.csv, try to find sibling val.csv and test.csv
         if 'train' in basename:
             train_filelist = read_csv_rows(opts.data_list_filepath)
             val_path = os.path.join(parent_dir, 'val.csv')
@@ -181,33 +249,43 @@ if __name__ == '__main__':
                 val_filelist = read_csv_rows(val_path)
             if os.path.exists(test_path):
                 test_filelist = read_csv_rows(test_path)
-            # If siblings not present, try combined data.csv in same directory
             if len(val_filelist) == 0 or len(test_filelist) == 0:
                 combined_path = os.path.join(parent_dir, 'data.csv')
                 if os.path.exists(combined_path):
                     t, v, te = get_train_val_test_filelists(combined_path)
-                    # If combined has entries, prefer them for missing splits
                     if len(val_filelist) == 0:
                         val_filelist = v
                     if len(test_filelist) == 0:
                         test_filelist = te
         else:
-            # Unknown filename: attempt to parse as combined or read as full list
             train_filelist, val_filelist, test_filelist = get_train_val_test_filelists(opts.data_list_filepath)
             if len(train_filelist) == 0 and len(val_filelist) == 0 and len(test_filelist) == 0:
-                # fallback: read all rows as train set
                 all_rows = read_csv_rows(opts.data_list_filepath)
                 train_filelist = all_rows
 
-    print(f"Training samples: {len(train_filelist)}")
-    print(f"Validation samples: {len(val_filelist)}")
+    if not is_ddp or local_rank in [-1, 0]:
+        print(f"Training samples: {len(train_filelist)}")
+        print(f"Validation samples: {len(val_filelist)}")
 
-    # Training dataloader with optimizations
+    # Training dataloader
     train_data = AlignedDataset(opts, train_filelist)
+    
+    if is_ddp:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+            train_data,
+            num_replicas=dist.get_world_size(),
+            rank=local_rank
+        )
+        shuffle = False
+    else:
+        train_sampler = None
+        shuffle = True
+    
     train_dataloader = torch.utils.data.DataLoader(
         dataset=train_data,
         batch_size=opts.batch_sz,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=train_sampler,
         num_workers=opts.num_workers,
         pin_memory=True,
         persistent_workers=True if opts.num_workers > 0 else False,
@@ -229,170 +307,211 @@ if __name__ == '__main__':
     ##===================================================##
     ##****************** Create model *******************##
     ##===================================================##
+    device = torch.device(f'cuda:{local_rank}' if is_ddp else 'cuda:0')
     model = ModelCRNet(opts)
+    
+    # Wrap model for multi-GPU
+    if is_ddp:
+        model.net_G = nn.parallel.DistributedDataParallel(
+            model.net_G,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=False
+        )
+        if not is_ddp or local_rank == 0:
+            print("Model wrapped with DistributedDataParallel")
+    elif torch.cuda.device_count() > 1:
+        model.net_G = nn.DataParallel(model.net_G)
+        print(f"Model wrapped with DataParallel on {torch.cuda.device_count()} GPUs")
 
-    # Note: Model is already on correct GPU in ModelCRNet.__init__
-    # No need for DataParallel wrapping here
-
-    # Resume from checkpoint if specified
+    # Resume from checkpoint
     start_epoch = 0
     best_val_psnr = 0.0
 
     if opts.resume_checkpoint and os.path.exists(opts.resume_checkpoint):
-        print(f"\nResuming from checkpoint: {opts.resume_checkpoint}")
-        checkpoint = torch.load(opts.resume_checkpoint, map_location='cuda')
+        if not is_ddp or local_rank in [-1, 0]:
+            print(f"\nResuming from checkpoint: {opts.resume_checkpoint}")
         
-        # Handle DataParallel wrapping
+        checkpoint = torch.load(
+            opts.resume_checkpoint,
+            map_location=device,
+            weights_only=False
+        )
+        
+        # Load model state
         state_dict = checkpoint['model_state_dict']
-        if gpu_count > 1 and not isinstance(model.net_G, nn.DataParallel):
-            # Add 'module.' prefix if loading into DataParallel
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                if not k.startswith('module.'):
-                    new_state_dict[f'module.{k}'] = v
-                else:
-                    new_state_dict[k] = v
-            state_dict = new_state_dict
-        elif not gpu_count > 1 and isinstance(model.net_G, nn.DataParallel):
-            # Remove 'module.' prefix if loading into non-DataParallel
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                if k.startswith('module.'):
-                    new_state_dict[k[7:]] = v
-                else:
-                    new_state_dict[k] = v
-            state_dict = new_state_dict
         
-        model.net_G.load_state_dict(state_dict)
+        # Handle DataParallel/DDP wrapping mismatches
+        if isinstance(model.net_G, (nn.DataParallel, nn.parallel.DistributedDataParallel)):
+            # Loading into wrapped model
+            if not any(k.startswith('module.') for k in state_dict.keys()):
+                state_dict = {f'module.{k}': v for k, v in state_dict.items()}
+        else:
+            # Loading into non-wrapped model
+            if any(k.startswith('module.') for k in state_dict.keys()):
+                state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        
+        model.net_G.load_state_dict(state_dict, strict=False)
         model.optimizer_G.load_state_dict(checkpoint['optimizer_state_dict'])
         model.lr_scheduler.load_state_dict(checkpoint['lr_scheduler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         if 'best_val_psnr' in checkpoint:
             best_val_psnr = checkpoint['best_val_psnr']
-        print(f"Resuming from epoch {start_epoch}, best val PSNR: {best_val_psnr:.2f} dB\n")
-    elif not opts.train_from_scratch:
-        print("Warning: No checkpoint found but train_from_scratch=False")
+        
+        if not is_ddp or local_rank in [-1, 0]:
+            print(f"Resumed from epoch {start_epoch}, best val PSNR: {best_val_psnr:.2f} dB\n")
 
     ##===================================================##
     ##**************** Train the network ****************##
     ##===================================================##
-    print("\n" + "="*60)
-    print("Starting Training")
-    print("="*60 + "\n")
+    if not is_ddp or local_rank in [-1, 0]:
+        print("\n" + "="*60)
+        print("Starting Training")
+        print("="*60 + "\n")
 
-    # Initialize logging
-    training_log = {
-        'experiment_name': opts.experiment_name,
-        'notes': opts.notes,
-        'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'config': vars(opts),
-        'epochs': []
-    }
+        # Initialize logging
+        training_log = {
+            'experiment_name': opts.experiment_name,
+            'notes': opts.notes,
+            'start_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'config': vars(opts),
+            'epochs': []
+        }
 
     total_steps = 0
     train_start_time = time.time()
 
     for epoch in range(start_epoch, opts.max_epochs):
         epoch_start_time = time.time()
-        print(f"\n{'='*60}")
-        print(f"Epoch {epoch}/{opts.max_epochs-1}")
-        print(f"{'='*60}")
+        
+        if not is_ddp or local_rank in [-1, 0]:
+            print(f"\n{'='*60}")
+            print(f"Epoch {epoch}/{opts.max_epochs-1}")
+            print(f"{'='*60}")
+        
+        # Set epoch for distributed sampler
+        if is_ddp and train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         
         model.net_G.train()
         
         epoch_loss = 0.0
-        epoch_psnr = 0.0
         num_batches = 0
         
-        # Wrap dataloader with tqdm for progress bar
-        progress_bar = tqdm(train_dataloader, desc=f"Training Epoch {epoch}", unit="batch")
+        # Progress bar
+        progress_bar = tqdm(
+            train_dataloader,
+            desc=f"Training Epoch {epoch}",
+            unit="batch",
+            disable=(is_ddp and local_rank != 0)
+        )
+        
         for batch_idx, data in enumerate(progress_bar):
             total_steps += 1
             
-            model.set_input(data)
-            batch_loss = model.optimize_parameters()
+            try:
+                model.set_input(data)
+                batch_loss = model.optimize_parameters()
+                
+                epoch_loss += batch_loss
+                num_batches += 1
+                
+                avg_loss = epoch_loss / num_batches
+                progress_bar.set_postfix({'loss': f'{avg_loss:.4f}'})
             
-            epoch_loss += batch_loss
-            num_batches += 1
-            
-            # Update progress bar with current metrics
-            avg_loss = epoch_loss / num_batches
-            progress_bar.set_postfix({'loss': f'{avg_loss:.4f}'})
+            except Exception as e:
+                print(f"Error in training batch: {e}")
+                continue
         
         # Epoch statistics
-        avg_train_loss = epoch_loss / num_batches
+        if num_batches > 0:
+            avg_train_loss = epoch_loss / num_batches
+        else:
+            avg_train_loss = 0.0
         
-        # Calculate training PSNR on last batch only (for speed)
-        with torch.no_grad():
-            avg_train_psnr = PSNR(model.pred_Cloudfree_data, model.cloudfree_data)
+        # Training PSNR on last batch
+        try:
+            with torch.no_grad():
+                avg_train_psnr = PSNR(model.pred_Cloudfree_data, model.cloudfree_data)
+                avg_train_psnr = float(avg_train_psnr.item() if hasattr(avg_train_psnr, 'item') else avg_train_psnr)
+        except Exception:
+            avg_train_psnr = 0.0
         
-        # Validation
-        print(f"\nRunning validation...")
-        val_psnr, val_ssim = validate(model, val_dataloader)
+        # Validation (only on main process)
+        if not is_ddp or local_rank in [-1, 0]:
+            print(f"\nRunning validation...")
+            val_psnr, val_ssim = validate(model, val_dataloader, device)
+            
+            # Update learning rate
+            if epoch >= opts.lr_start_epoch_decay:
+                model.lr_scheduler.step()
+                current_lr = model.optimizer_G.param_groups[0]['lr']
+                print(f"Learning rate updated: {current_lr:.6f}")
+            
+            # Check if best model
+            is_best = val_psnr > best_val_psnr
+            if is_best:
+                best_val_psnr = val_psnr
+            
+            # ALWAYS save checkpoint every epoch (removed frequency check)
+            save_checkpoint_fn(model, epoch, val_psnr, best_val_psnr, opts, is_ddp)
+            
+            epoch_time = time.time() - epoch_start_time
+            
+            # Log epoch results
+            epoch_log = {
+                'epoch': epoch,
+                'train_loss': float(avg_train_loss),
+                'train_psnr': float(avg_train_psnr),
+                'val_psnr': float(val_psnr),
+                'val_ssim': float(val_ssim),
+                'best_val_psnr': float(best_val_psnr),
+                'learning_rate': float(model.optimizer_G.param_groups[0]['lr']),
+                'epoch_time': float(epoch_time),
+                'is_best': is_best
+            }
+            training_log['epochs'].append(epoch_log)
+            
+            # Print summary
+            print(f"\n{'='*60}")
+            print(f"Epoch {epoch} Summary:")
+            print(f"  Train Loss: {avg_train_loss:.4f}")
+            print(f"  Train PSNR: {avg_train_psnr:.2f} dB")
+            print(f"  Val PSNR:   {val_psnr:.2f} dB")
+            print(f"  Val SSIM:   {val_ssim:.4f}")
+            print(f"  Best Val PSNR: {best_val_psnr:.2f} dB {'(NEW!)' if is_best else ''}")
+            print(f"  Epoch Time: {epoch_time/60:.1f} minutes")
+            print(f"{'='*60}")
+            
+            # Save training log
+            log_dir = os.path.join(opts.save_model_dir, 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, f'{opts.experiment_name}_log.json')
+            with open(log_path, 'w') as f:
+                json.dump(training_log, f, indent=2)
         
-        # Update learning rate
-        if epoch >= opts.lr_start_epoch_decay:
-            model.lr_scheduler.step()
-            current_lr = model.optimizer_G.param_groups[0]['lr']
-            print(f"Learning rate updated: {current_lr:.6f}")
-        
-        # Check if best model
-        is_best = val_psnr > best_val_psnr
-        if is_best:
-            best_val_psnr = val_psnr
-        
-        # Save checkpoint at configured frequency
-        if (epoch % opts.save_freq == 0) or (epoch == opts.max_epochs - 1):
-            save_checkpoint_fn(model, epoch, val_psnr, best_val_psnr, opts)
-        
-        epoch_time = time.time() - epoch_start_time
-        
-        # Log epoch results
-        epoch_log = {
-            'epoch': epoch,
-            'train_loss': float(avg_train_loss),
-            'train_psnr': float(avg_train_psnr),
-            'val_psnr': float(val_psnr),
-            'val_ssim': float(val_ssim),
-            'best_val_psnr': float(best_val_psnr),
-            'learning_rate': float(model.optimizer_G.param_groups[0]['lr']),
-            'epoch_time': float(epoch_time),
-            'is_best': is_best
-        }
-        training_log['epochs'].append(epoch_log)
-        
-        # Print epoch summary
-        print(f"\n{'='*60}")
-        print(f"Epoch {epoch} Summary:")
-        print(f"  Train Loss: {avg_train_loss:.4f}")
-        print(f"  Train PSNR: {avg_train_psnr:.2f} dB")
-        print(f"  Val PSNR:   {val_psnr:.2f} dB")
-        print(f"  Val SSIM:   {val_ssim:.4f}")
-        print(f"  Best Val PSNR: {best_val_psnr:.2f} dB {'(NEW!)' if is_best else ''}")
-        print(f"  Epoch Time: {epoch_time/60:.1f} minutes")
-        print(f"{'='*60}")
-        
-        # Save training log after each epoch
-        log_dir = os.path.join(opts.save_model_dir, 'logs')
-        os.makedirs(log_dir, exist_ok=True)
-        log_path = os.path.join(log_dir, f'{opts.experiment_name}_log.json')
+        # Synchronize all processes
+        if is_ddp:
+            dist.barrier()
+
+    # Training complete
+    if not is_ddp or local_rank in [-1, 0]:
+        total_time = time.time() - train_start_time
+        training_log['end_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        training_log['total_time_hours'] = total_time / 3600
+
         with open(log_path, 'w') as f:
             json.dump(training_log, f, indent=2)
 
-    # Training complete
-    total_time = time.time() - train_start_time
-    training_log['end_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    training_log['total_time_hours'] = total_time / 3600
-
-    # Final log save
-    with open(log_path, 'w') as f:
-        json.dump(training_log, f, indent=2)
-
-    print(f"\n{'='*60}")
-    print("Training Complete!")
-    print(f"{'='*60}")
-    print(f"Total Time: {total_time/3600:.2f} hours")
-    print(f"Best Validation PSNR: {best_val_psnr:.2f} dB")
-    print(f"Training log saved to: {log_path}")
-    print(f"Best model saved to: {os.path.join(opts.save_model_dir, 'best_model.pth')}")
-    print(f"{'='*60}\n")
+        print(f"\n{'='*60}")
+        print("Training Complete!")
+        print(f"{'='*60}")
+        print(f"Total Time: {total_time/3600:.2f} hours")
+        print(f"Best Validation PSNR: {best_val_psnr:.2f} dB")
+        print(f"Training log saved to: {log_path}")
+        print(f"Best model saved to: {os.path.join(opts.save_model_dir, 'best_model.pth')}")
+        print(f"{'='*60}\n")
+    
+    # Cleanup DDP
+    if is_ddp:
+        dist.destroy_process_group()
