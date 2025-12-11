@@ -2,11 +2,8 @@ import torch
 import torch.nn as nn
 
 from model_base import *
-
 from net_CR_RDN import *
-
 from metrics import *
-
 from torch.optim import lr_scheduler
 
 class ModelCRNet(ModelBase):
@@ -14,41 +11,56 @@ class ModelCRNet(ModelBase):
         super(ModelCRNet, self).__init__()
         self.opts = opts
         
-        # create network
+        # Create network
         self.net_G = RDN_residual_CR(self.opts.crop_size)
-        # Move to single GPU (use GPU 0 to avoid DataParallel nested wrapping issues)
-        # For multi-GPU setups, increase batch_sz instead of using DataParallel
-        gpu_ids = [int(g) for g in self.opts.gpu_ids.split(',')] if self.opts.gpu_ids else [0]
-        device = torch.device(f'cuda:{gpu_ids[0]}')
-        self.net_G = self.net_G.to(device)
-        if len(gpu_ids) > 1:
-            print(f"Single-GPU training on GPU {gpu_ids[0]} (use batch_sz >= 16 for better throughput)")
+        
+        # Move to GPU - let the training script handle DataParallel/DDP wrapping
+        # Just move to the first GPU for now
+        if torch.cuda.is_available():
+            self.net_G = self.net_G.cuda()
+            print(f"Model moved to GPU")
+        else:
+            print("Warning: CUDA not available, using CPU")
+        
         self.print_networks(self.net_G)
 
-        # initialize optimizers
+        # Initialize optimizers
         if self.opts.optimizer == 'Adam':
             self.optimizer_G = torch.optim.Adam(self.net_G.parameters(), lr=opts.lr)
             self.lr_scheduler = lr_scheduler.StepLR(self.optimizer_G, step_size=self.opts.lr_step, gamma=0.5)
+        else:
+            raise ValueError(f"Optimizer {self.opts.optimizer} not supported")
             
-        self.loss_fn=nn.L1Loss()
+        self.loss_fn = nn.L1Loss()
                         
     def set_input(self, _input):
+        """Set input data and move to appropriate device"""
         inputs = _input
-        device = next(self.net_G.parameters()).device  # Get device from model
-        self.cloudy_data = inputs['cloudy_data'].to(device)
-        self.cloudfree_data = inputs['cloudfree_data'].to(device)
-        self.SAR_data = inputs['SAR_data'].to(device)
+        
+        # Get device from model (handles DataParallel/DDP automatically)
+        if isinstance(self.net_G, (nn.DataParallel, nn.parallel.DistributedDataParallel)):
+            device = next(self.net_G.module.parameters()).device
+        else:
+            device = next(self.net_G.parameters()).device
+        
+        self.cloudy_data = inputs['cloudy_data'].to(device, non_blocking=True)
+        self.cloudfree_data = inputs['cloudfree_data'].to(device, non_blocking=True)
+        self.SAR_data = inputs['SAR_data'].to(device, non_blocking=True)
         
     def forward(self):
+        """Forward pass through the network"""
         pred_CloudFree_data = self.net_G(self.cloudy_data, self.SAR_data)
         return pred_CloudFree_data
 
     def optimize_parameters(self):
-                
+        """Perform forward pass, compute loss, and update weights"""
+        
         self.pred_Cloudfree_data = self.forward()
 
+        # Compute loss
         self.loss_G = self.loss_fn(self.pred_Cloudfree_data, self.cloudfree_data)
 
+        # Backpropagation
         self.optimizer_G.zero_grad()
         self.loss_G.backward()
         
@@ -60,9 +72,19 @@ class ModelCRNet(ModelBase):
         return self.loss_G.item()
 
     def get_current_scalars(self):
+        """Get current training metrics"""
         losses = {}
-        losses['PSNR_train']=PSNR(self.pred_Cloudfree_data.data, self.cloudfree_data)
+        try:
+            psnr_val = PSNR(self.pred_Cloudfree_data.data, self.cloudfree_data)
+            # Handle tensor/float conversion
+            if hasattr(psnr_val, 'item'):
+                psnr_val = psnr_val.item()
+            losses['PSNR_train'] = float(psnr_val)
+        except Exception as e:
+            print(f"Warning: Could not compute PSNR: {e}")
+            losses['PSNR_train'] = 0.0
         return losses
 
     def save_checkpoint(self, epoch):
+        """Save model checkpoint"""
         self.save_network(self.net_G, self.optimizer_G, epoch, self.lr_scheduler, self.opts.save_model_dir)
