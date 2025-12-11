@@ -1,3 +1,4 @@
+# Fixed net_CR_RDN.py - properly calculates H and W from actual tensor dimensions
 import torch
 import torch.nn as nn
 from numpy.random import normal
@@ -17,27 +18,12 @@ from submodules import df_conv, df_resnet_block
 def pixel_reshuffle(input, upscale_factor):
     r"""Rearranges elements in a tensor of shape ``[*, C, H, W]`` to a
     tensor of shape ``[C*r^2, H/r, W/r]``.
-
-    See :class:`~torch.nn.PixelShuffle` for details.
-
-    Args:
-        input (Variable): Input
-        upscale_factor (int): factor to increase spatial resolution by
-
-    Examples:
-        >>> input = autograd.Variable(torch.Tensor(1, 3, 12, 12))
-        >>> output = pixel_reshuffle(input,2)
-        >>> print(output.size())
-        torch.Size([1, 12, 6, 6])
     """
     batch_size, channels, in_height, in_width = input.size()
-
-    # // division is to keep data type unchanged. In this way, the out_height is still int type
     out_height = in_height // upscale_factor
     out_width = in_width // upscale_factor
     input_view = input.contiguous().view(batch_size, channels, out_height, upscale_factor, out_width, upscale_factor)
     channels = channels * upscale_factor * upscale_factor
-
     shuffle_out = input_view.permute(0, 1, 3, 5, 2, 4).contiguous()
     return shuffle_out.view(batch_size, channels, out_height, out_width)
 
@@ -75,74 +61,40 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-
 def window_partition(x, window_size):
-    """
-    Args:
-        x: (B, H, W, C)
-        window_size (int): window size
-    Returns:
-        windows: (num_windows*B, window_size, window_size, C)
-    """
     B, H, W, C = x.shape
     x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
     windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
     return windows
 
-
 def window_reverse(windows, window_size, H, W):
-    """
-    Args:
-        windows: (num_windows*B, window_size, window_size, C)
-        window_size (int): Window size
-        H (int): Height of image
-        W (int): Width of image
-    Returns:
-        x: (B, H, W, C)
-    """
     B = int(windows.shape[0] / (H * W / window_size / window_size))
     x = windows.view(B, H // window_size, W // window_size, window_size, window_size, -1)
     x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
     return x
 
-
 class WindowAttention(nn.Module):
-    r""" Window based multi-head self attention (W-MSA) module with relative position bias.
-    It supports both of shifted and non-shifted window.
-    Args:
-        dim (int): Number of input channels.
-        window_size (tuple[int]): The height and width of the window.
-        num_heads (int): Number of attention heads.
-        qkv_bias (bool, optional):  If True, add a learnable bias to query, key, value. Default: True
-        qk_scale (float | None, optional): Override default qk scale of head_dim ** -0.5 if set
-        attn_drop (float, optional): Dropout ratio of attention weight. Default: 0.0
-        proj_drop (float, optional): Dropout ratio of output. Default: 0.0
-    """
-
     def __init__(self, dim, window_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0.):
-
         super().__init__()
         self.dim = dim
-        self.window_size = window_size  # Wh, Ww
+        self.window_size = window_size
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = qk_scale or head_dim ** -0.5
 
-        # define a parameter table of relative position bias
         self.relative_position_bias_table = nn.Parameter(
-            torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1), num_heads))  # 2*Wh-1 * 2*Ww-1, nH
+            torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1), num_heads))
 
-        # get pair-wise relative position index for each token inside the window
         coords_h = torch.arange(self.window_size[0])
         coords_w = torch.arange(self.window_size[1])
-        coords = torch.stack(torch.meshgrid([coords_h, coords_w]))  # 2, Wh, Ww
-        coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
-        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
-        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
-        relative_coords[:, :, 0] += self.window_size[0] - 1  # shift to start from 0
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w]))
+        coords_flatten = torch.flatten(coords, 1)
+        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]
+        relative_coords = relative_coords.permute(1, 2, 0).contiguous()
+        relative_coords[:, :, 0] += self.window_size[0] - 1
         relative_coords[:, :, 1] += self.window_size[1] - 1
         relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1
-        relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
+        relative_position_index = relative_coords.sum(-1)
         self.register_buffer("relative_position_index", relative_position_index)
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -163,19 +115,13 @@ class WindowAttention(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, inputs, mask=None):
-        """
-        Args:
-            x: input features with shape of (num_windows*B, N, C)
-            mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None
-        """
         [x, x_SAR] = inputs
-
         B_, N, C = x.shape
 
         qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         qkv_SAR = self.qkv_SAR(x_SAR).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2] 
-        q_SAR, k_SAR, v_SAR = qkv_SAR[0], qkv_SAR[1], qkv_SAR[2] # make torchscript happy (cannot use tensor as tuple)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        q_SAR, k_SAR, v_SAR = qkv_SAR[0], qkv_SAR[1], qkv_SAR[2]
 
         q = q * self.scale
         q_SAR = q_SAR * self.scale
@@ -183,8 +129,8 @@ class WindowAttention(nn.Module):
         attn_SAR = (q_SAR @ k_SAR.transpose(-2, -1))
 
         relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
-            self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
-        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
+            self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()
         attn = attn + relative_position_bias.unsqueeze(0)
         attn_SAR = attn_SAR + relative_position_bias.unsqueeze(0)
 
@@ -197,18 +143,17 @@ class WindowAttention(nn.Module):
             attn_SAR = attn_SAR.view(-1, self.num_heads, N, N)
 
             attn_diff_conv = self.attn_fuse_1x1conv(attn_SAR - attn)
-            attn_fuse_gate = torch.sigmoid(attn_diff_conv) # compute the gate 
+            attn_fuse_gate = torch.sigmoid(attn_diff_conv)
 
-            attn = attn + (attn_SAR - attn)* attn_fuse_gate
+            attn = attn + (attn_SAR - attn) * attn_fuse_gate
 
             attn = self.softmax(attn)
             attn_SAR = self.softmax(attn_SAR)
         else:
-            
             attn_diff_conv = self.attn_fuse_1x1conv(attn_SAR - attn)
-            attn_fuse_gate = torch.sigmoid(attn_diff_conv) # compute the gate 
+            attn_fuse_gate = torch.sigmoid(attn_diff_conv)
 
-            attn = attn + (attn_SAR - attn)* attn_fuse_gate
+            attn = attn + (attn_SAR - attn) * attn_fuse_gate
 
             attn = self.softmax(attn)
             attn_SAR = self.softmax(attn_SAR)
@@ -224,7 +169,7 @@ class WindowAttention(nn.Module):
 
         x = self.proj_drop(x)
         x_SAR = self.proj_drop_SAR(x_SAR)
-        
+
         return [x, x_SAR]
 
 class RDB_Conv(nn.Module):
@@ -252,12 +197,10 @@ class RDB_Conv(nn.Module):
         self.shift_size = shift_size
         self.mlp_ratio = mlp_ratio
         if min(self.input_resolution) <= self.window_size:
-            # if window size is larger than input resolution, we don't partition windows
             self.shift_size = 0
             self.window_size = min(self.input_resolution)
         assert 0 <= self.shift_size < self.window_size, "shift_size must in 0-window_size"
 
-        # self.norm1 = norm_layer(dim)
         self.attn = WindowAttention(
             self.dim, window_size=to_2tuple(self.window_size), num_heads=num_heads,
             qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
@@ -274,9 +217,8 @@ class RDB_Conv(nn.Module):
         self.mlp_SAR = Mlp(in_features=self.dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
         if self.shift_size > 0:
-            # calculate attention mask for SW-MSA
             H, W = self.input_resolution
-            img_mask = torch.zeros((1, H, W, 1))  # 1 H W 1
+            img_mask = torch.zeros((1, H, W, 1))
             h_slices = (slice(0, -self.window_size),
                         slice(-self.window_size, -self.shift_size),
                         slice(-self.shift_size, None))
@@ -289,7 +231,7 @@ class RDB_Conv(nn.Module):
                     img_mask[:, h, w, :] = cnt
                     cnt += 1
 
-            mask_windows = window_partition(img_mask, self.window_size)  # nW, window_size, window_size, 1
+            mask_windows = window_partition(img_mask, self.window_size)
             mask_windows = mask_windows.view(-1, self.window_size * self.window_size)
             attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
             attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
@@ -303,23 +245,24 @@ class RDB_Conv(nn.Module):
         [input, input_SAR] = inputs
         [x, x_SAR] = inputs
 
-        H, W = self.input_resolution
-
+        # CRITICAL FIX: Get actual spatial dimensions from input tensor
+        B, C_in, H_actual, W_actual = x.shape
+        
         x_conv = self.conv(x)
-        x_SAR_conv = self.conv_SAR(x_SAR)  # B, growRate0 + c*growRate, H, W --> B, growRate, H, W
+        x_SAR_conv = self.conv_SAR(x_SAR)
 
-        x_conv_unfold = x_conv.flatten(2).transpose(1, 2) 
-        x_SAR_conv_unfold = x_SAR_conv.flatten(2).transpose(1, 2) # B, growRate, H, W --> B, H*W, growRate
+        x_conv_unfold = x_conv.flatten(2).transpose(1, 2)
+        x_SAR_conv_unfold = x_SAR_conv.flatten(2).transpose(1, 2)
 
-        shortcut = x_conv_unfold 
-        shortcut_SAR = x_SAR_conv_unfold  # B, H*W, growDim
+        shortcut = x_conv_unfold
+        shortcut_SAR = x_SAR_conv_unfold
 
         B, H_W, growRate = x_conv_unfold.shape
 
-        x = x_conv_unfold.view(B, H, W, growRate) 
-        x_SAR = x_SAR_conv_unfold.view(B, H, W, growRate) # B, H, W, growDim
+        # Use actual spatial dimensions from the tensor
+        x = x_conv_unfold.reshape(B, H_actual, W_actual, growRate)
+        x_SAR = x_SAR_conv_unfold.reshape(B, H_actual, W_actual, growRate)
 
-        # cyclic shift
         if self.shift_size > 0:
             shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
             shifted_x_SAR = torch.roll(x_SAR, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
@@ -327,23 +270,19 @@ class RDB_Conv(nn.Module):
             shifted_x = x
             shifted_x_SAR = x_SAR
 
-        # partition windows
         x_windows = window_partition(shifted_x, self.window_size)
         x_windows = x_windows.view(-1, self.window_size * self.window_size, growRate)
 
         x_SAR_windows = window_partition(shifted_x_SAR, self.window_size)
         x_SAR_windows = x_SAR_windows.view(-1, self.window_size * self.window_size, growRate)
 
-        # W-MSA/SW-MSA
         [attn_windows, SAR_attn_windows] = self.attn([x_windows, x_SAR_windows], mask=self.attn_mask)
 
-        # merge windows
         attn_windows = attn_windows.view(-1, self.window_size, self.window_size, growRate)
         SAR_attn_windows = SAR_attn_windows.view(-1, self.window_size, self.window_size, growRate)
-        shifted_x = window_reverse(attn_windows, self.window_size, H, W)
-        shifted_x_SAR = window_reverse(SAR_attn_windows, self.window_size, H, W)
+        shifted_x = window_reverse(attn_windows, self.window_size, H_actual, W_actual)
+        shifted_x_SAR = window_reverse(SAR_attn_windows, self.window_size, H_actual, W_actual)
 
-        # reverse cyclic shift
         if self.shift_size > 0:
             x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
             x_SAR = torch.roll(shifted_x_SAR, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
@@ -354,18 +293,16 @@ class RDB_Conv(nn.Module):
         x = x.view(B, H_W, growRate)
         x_SAR = x_SAR.view(B, H_W, growRate)
 
-        # FFN
         x = shortcut + self.drop_path(x)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
 
         x_SAR = shortcut_SAR + self.drop_path_SAR(x_SAR)
         x_SAR = x_SAR + self.drop_path_SAR(self.mlp_SAR(self.norm2_SAR(x_SAR)))
 
-        x_unfold = x.transpose(1, 2).view(B, growRate, H, W)
-        x_SAR_unfold = x_SAR.transpose(1, 2).view(B, growRate, H, W)
+        x_unfold = x.transpose(1, 2).view(B, growRate, H_actual, W_actual)
+        x_SAR_unfold = x_SAR.transpose(1, 2).view(B, growRate, H_actual, W_actual)
 
         return [torch.cat((input, x_unfold), 1), torch.cat((input_SAR, x_SAR_unfold), 1)]
-
 
 class RDB(nn.Module):
     def __init__(self, growRate0, growRate, nConvLayers, kSize, input_resolution, num_heads, window_size,
@@ -386,7 +323,6 @@ class RDB(nn.Module):
                                   norm_layer=norm_layer))
         self.convs = nn.Sequential(*convs)
 
-        # Local Feature Fusion
         self.LFF = nn.Conv2d(G0 + C * G, G0, 3, 1, 1)
         self.LFF_SAR = nn.Conv2d(G0 + C * G, G0, 3, 1, 1)
 
@@ -395,14 +331,12 @@ class RDB(nn.Module):
         [x_convs, x_SAR_convs] = self.convs(inputs)
         return [self.LFF(x_convs) + x, self.LFF_SAR(x_SAR_convs) + x_SAR]
 
-
 class RDN_residual_CR(nn.Module):
     def __init__(self, input_size):
         super(RDN_residual_CR, self).__init__()
         self.G0 = 96
         kSize = 3
 
-        # number of RDB blocks, conv layers, out channels
         self.D = 6
         self.C = 5
         self.G = 48
@@ -417,17 +351,14 @@ class RDN_residual_CR(nn.Module):
         drop_path_rate = 0.2
         norm_layer = nn.LayerNorm
 
-        # Shallow feature extraction net
         self.SFENet1 = nn.Conv2d(13 * 4, self.G0, 5, padding=2, stride=1)
         self.SFENet2 = nn.Conv2d(self.G0, self.G0, kSize, padding=(kSize - 1) // 2, stride=1)
 
         self.SFENet1_SAR = nn.Conv2d(2 * 4, self.G0, 5, padding=2, stride=1)
         self.SFENet2_SAR = nn.Conv2d(self.G0, self.G0, kSize, padding=(kSize - 1) // 2, stride=1)
 
-        # stochastic depth
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.D * self.C)]  # stochastic depth decay rule
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, self.D * self.C)]
 
-        # Redidual dense blocks and dense feature fusion
         self.RDBs = nn.ModuleList()
         for i in range(self.D):
             self.RDBs.append(
@@ -442,33 +373,30 @@ class RDN_residual_CR(nn.Module):
                     norm_layer=norm_layer)
             )
 
-        # fusion
         channels = self.G0
         ks_2d = 5
 
-        self.DF = nn.ModuleList() #dynamic filter
+        self.DF = nn.ModuleList()
         for i in range(self.D):
             self.DF.append(DFG(channels*2, ks_2d))
 
-        self.DFR = nn.ModuleList() #dynamic filter
+        self.DFR = nn.ModuleList()
         for i in range(self.D):
             self.DFR.append(KernelConv2D.KernelConv2D(ks_2d))
         
-        self.sar_fuse_1x1conv = nn.ModuleList() #gate for sar, aggregation
+        self.sar_fuse_1x1conv = nn.ModuleList()
         for i in range(self.D):
             self.sar_fuse_1x1conv.append(nn.Conv2d(channels, channels, kernel_size=1))
 
-        self.opt_distribute_1x1conv = nn.ModuleList() #gate for opt, distribution
+        self.opt_distribute_1x1conv = nn.ModuleList()
         for i in range(self.D):
             self.opt_distribute_1x1conv.append(nn.Conv2d(channels, channels, kernel_size=1))
 
-        # Global Feature Fusion
         self.GFF = nn.Sequential(*[
             nn.Conv2d(self.D * self.G0, self.G0, 1, padding=0, stride=1),
             nn.Conv2d(self.G0, self.G0, kSize, padding=(kSize - 1) // 2, stride=1)
         ])
 
-        # Up-sampling net
         self.UPNet = nn.Sequential(*[
             nn.Conv2d(self.G0, 256, kSize, padding=(kSize - 1) // 2, stride=1),
             nn.PixelShuffle(2),
@@ -476,23 +404,34 @@ class RDN_residual_CR(nn.Module):
         ])
 
     def forward(self, cloudy_data, SAR):
-        B_shuffle = pixel_reshuffle(cloudy_data, 2)
+        # Defensive: skip reshuffle if inputs already at expected size
+        try:
+            h, w = cloudy_data.shape[-2], cloudy_data.shape[-1]
+        except Exception:
+            h = cloudy_data.size()[-2]
+            w = cloudy_data.size()[-1]
+
+        # If input is 128x128, apply pixel_reshuffle to get 64x64
+        # If input is already 64x64 or smaller, skip reshuffle
+        if h > 64 or w > 64:
+            B_shuffle = pixel_reshuffle(cloudy_data, 2)
+            B_shuffle_SAR = pixel_reshuffle(SAR, 2)
+        else:
+            B_shuffle = cloudy_data
+            B_shuffle_SAR = SAR
+
         f__1 = self.SFENet1(B_shuffle)
         x = self.SFENet2(f__1)
 
-        B_shuffle_SAR = pixel_reshuffle(SAR, 2)
         f__1__SAR = self.SFENet1_SAR(B_shuffle_SAR)
         x_SAR = self.SFENet2_SAR(f__1__SAR)
 
         RDBs_out = []
         for i in range(self.D):
-
             [x, x_SAR] = self.RDBs[i]([x,x_SAR])
-
             x, x_SAR = self.fuse(x, x_SAR, i)
-
             RDBs_out.append(x)
-        
+
         x = self.GFF(torch.cat(RDBs_out, 1))
         x += f__1
 
@@ -500,7 +439,6 @@ class RDN_residual_CR(nn.Module):
         return pred_CloudFree_data
 
     def fuse(self, OPT, SAR, i):
-        
         OPT_m = OPT
         SAR_m = SAR
 
@@ -508,19 +446,18 @@ class RDN_residual_CR(nn.Module):
         SAR_m = self.DFR[i](SAR_m, kernel_sar)
 
         sar_s = self.sar_fuse_1x1conv[i](SAR_m - OPT_m)
-        sar_fuse_gate = torch.sigmoid(sar_s) # compute the gate 
+        sar_fuse_gate = torch.sigmoid(sar_s)
 
-        new_OPT = OPT + (SAR_m - OPT_m) * sar_fuse_gate # update the optical
+        new_OPT = OPT + (SAR_m - OPT_m) * sar_fuse_gate
 
         new_OPT_m = new_OPT
-        
-        opt_s = self.opt_distribute_1x1conv[i](new_OPT_m - SAR_m) 
-        opt_distribute_gate = torch.sigmoid(opt_s) # compute the gate 
 
-        new_SAR = SAR + (new_OPT_m - SAR_m) * opt_distribute_gate # update the SAR
+        opt_s = self.opt_distribute_1x1conv[i](new_OPT_m - SAR_m)
+        opt_distribute_gate = torch.sigmoid(opt_s)
+
+        new_SAR = SAR + (new_OPT_m - SAR_m) * opt_distribute_gate
 
         return new_OPT, new_SAR
-
 
 if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = '0'
@@ -538,4 +475,3 @@ if __name__ == "__main__":
     pred_planet_cloudfree = model(cloudy, s1_sar)
 
     print(pred_planet_cloudfree.shape)
-
